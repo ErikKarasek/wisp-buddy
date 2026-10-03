@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "The buddy and its studio",
-  "windows": ["pet", "studio"],
+  "windows": ["pet", "studio", "chat"],
   "permissions": ["core:default"]
 }

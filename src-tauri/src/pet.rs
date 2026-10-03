@@ -67,6 +67,12 @@ struct Pet {
     trail: Vec<(Instant, f64, f64)>,
     /// Whether the window lets clicks through (the cursor is not on the body).
     passthrough: bool,
+    /// The chat bubble is open: it stands still and stays awake.
+    talking: bool,
+    /// A click waits this long for a second one before it becomes a poke (a double click opens
+    /// the chat instead), and when the last quick click was.
+    hop_at: Option<Instant>,
+    last_click: Option<Instant>,
     sent: Option<(Mode, f64)>,
 }
 
@@ -142,6 +148,17 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, dt: f64) {
         let min_x = a.left;
         let max_x = a.right - SIZE;
 
+        // A single click, once it is clear no second one follows: a little hop.
+        if p.hop_at.is_some_and(|t| now >= t) {
+            p.hop_at = None;
+            if p.mode != Mode::Held {
+                p.mode = Mode::Fall;
+                p.vx = 0.0;
+                p.vy = -520.0;
+                react = Some("poke");
+            }
+        }
+
         match p.mode {
             Mode::Held => {
                 if let Some(c) = cursor {
@@ -174,19 +191,20 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, dt: f64) {
                         p.vx *= 0.6;
                         react = Some("dizzy");
                     } else {
+                        // A real fall gets a proud landing; a click that never left the floor does not.
+                        if react.is_none() && p.vy > 250.0 {
+                            react = Some("land");
+                        }
                         p.vx = 0.0;
                         p.vy = 0.0;
                         p.mode = Mode::Idle;
                         p.until = now + Duration::from_secs_f64(1.5 + rand() * 2.0);
-                        if react.is_none() {
-                            react = Some("land");
-                        }
                     }
                 }
             }
             _ => {
-                // On the floor. At night it sleeps, unless woken a moment ago.
-                let night = p.sleep_by_hand || (is_night() && p.awake_until.map_or(true, |t| now > t));
+                // On the floor. At night it sleeps, unless woken a moment ago or talking.
+                let night = !p.talking && (p.sleep_by_hand || (is_night() && p.awake_until.map_or(true, |t| now > t)));
                 if night && p.mode != Mode::Sleep {
                     p.mode = Mode::Sleep;
                 } else if !night && p.mode == Mode::Sleep {
@@ -198,6 +216,10 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, dt: f64) {
                     p.mode = Mode::Fall;
                     p.vx = 0.0;
                     p.vy = 0.0;
+                } else if p.talking {
+                    // Listening: stand still until the bubble closes.
+                    p.mode = Mode::Idle;
+                    p.until = now + Duration::from_secs(2);
                 } else if p.mode != Mode::Sleep {
                     if now >= p.until {
                         next_activity(p, a);
@@ -236,6 +258,7 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, dt: f64) {
 
     if let Some((x, y)) = moved_to {
         let _ = win.set_position(PhysicalPosition::new((x * a.scale).round() as i32, (y * a.scale).round() as i32));
+        crate::chat::follow(app, x, y, SIZE, (a.left, a.top, a.right, a.bottom, a.scale));
     }
     if let Some(through) = ignore {
         let _ = win.set_ignore_cursor_events(through);
@@ -270,6 +293,9 @@ pub fn start(app: AppHandle) {
             moved: 0.0,
             trail: vec![],
             passthrough: false,
+            talking: false,
+            hop_at: None,
+            last_click: None,
             sent: None,
         });
         let _ = win.show();
@@ -318,28 +344,48 @@ pub fn grab(app: AppHandle) {
     }
 }
 
-/// The mouse went up: a short click is a poke (a hop), anything else is a throw.
+/// The mouse went up: a short click is a poke (a hop), two quick ones open the chat, anything
+/// else is a throw.
 #[tauri::command]
 pub fn release(app: AppHandle) {
-    let poke = with(|p| {
+    let double = with(|p| {
         if p.mode != Mode::Held {
             return false;
         }
+        let now = Instant::now();
         let quick = p.grabbed_at.elapsed() < Duration::from_millis(350) && p.moved < 6.0;
         p.mode = Mode::Fall;
         if quick {
             p.vx = 0.0;
-            p.vy = -520.0;
+            p.vy = 0.0;
+            if p.last_click.is_some_and(|t| now.duration_since(t) < Duration::from_millis(400)) {
+                p.last_click = None;
+                p.hop_at = None;
+                return true;
+            }
+            p.last_click = Some(now);
+            p.hop_at = Some(now + Duration::from_millis(280));
         } else if let (Some(first), Some(last)) = (p.trail.first(), p.trail.last()) {
             let dt = last.0.duration_since(first.0).as_secs_f64().max(0.016);
             p.vx = ((last.1 - first.1) / dt).clamp(-2500.0, 2500.0);
             p.vy = ((last.2 - first.2) / dt).clamp(-2500.0, 2500.0);
         }
-        quick
+        false
     });
-    if poke == Some(true) {
-        let _ = app.emit_to("pet", "pet-react", "poke");
+    if double == Some(true) {
+        crate::chat::open(&app);
     }
+}
+
+/// The chat bubble opened or closed.
+pub fn set_talking(on: bool) {
+    with(|p| {
+        p.talking = on;
+        if on {
+            p.sleep_by_hand = false;
+            p.awake_until = Some(Instant::now() + Duration::from_secs(10 * 60));
+        }
+    });
 }
 
 /// From the tray: bring it to the screen under the mouse, dropping in from above.

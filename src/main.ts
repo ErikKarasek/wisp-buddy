@@ -1,7 +1,9 @@
-// One page, two windows: the buddy on the desktop, and the studio where its look is made.
+// One page, three windows: the buddy on the desktop, the studio where its look is made, and
+// the chat bubble above its head.
 const view = new URLSearchParams(location.search).get("view");
 
-if (view === "studio") (await import("./studio")).startStudio();
-else (await import("./buddy")).startBuddy();
+if (view === "studio") await (await import("./studio")).startStudio();
+else if (view === "chat") await (await import("./chat")).startChat();
+else await (await import("./buddy")).startBuddy();
 
 export {};

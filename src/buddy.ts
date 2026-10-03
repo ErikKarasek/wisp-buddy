@@ -10,7 +10,7 @@ import { mountMascot } from "./mascot/svg";
 
 type Mode = "idle" | "walk" | "sit" | "sleep" | "fall" | "held";
 type PetState = { mode: Mode; facing: number };
-type Reaction = "poke" | "land" | "dizzy" | "wake";
+type Reaction = "poke" | "land" | "dizzy" | "wake" | "think" | "talk" | "confused";
 
 const BASE: Record<Mode, ExpressionName> = {
   idle: "happy",
@@ -68,6 +68,12 @@ export async function startBuddy() {
       react("tired", 1400);
     } else if (e.payload === "land") react("proud", 500);
     else if (e.payload === "wake") react("surprised", 800);
+    // Talking in the bubble: it thinks while Gemini answers, then perks up, or looks lost.
+    else if (e.payload === "think") react("curious", 40_000);
+    else if (e.payload === "talk") {
+      mascot.roll(500);
+      react("happy", 1200);
+    } else if (e.payload === "confused") react("sad", 1500);
   });
 
   // The mouse: press to pick it up, release to let go (a short click is a poke, Rust decides).
