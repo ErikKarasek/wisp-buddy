@@ -65,8 +65,17 @@ fn tray(app: &App) -> tauri::Result<()> {
         .collect::<Result<_, _>>()?;
     let bed_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = beds.iter().map(|b| b as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
     let bedtime = Submenu::with_items(app, "Poslat mě spát", true, &bed_refs)?;
+    // How big it is. Smaller needs less room above a window to climb onto it.
+    let size_now = config::field(app.handle(), "size").and_then(|v| v.as_u64()).unwrap_or(140) as u32;
+    pet::init_size(size_now);
+    let sizes: Vec<CheckMenuItem<tauri::Wry>> = [(100u32, "Malý"), (140, "Střední"), (180, "Velký")]
+        .iter()
+        .map(|(pts, label)| CheckMenuItem::with_id(app, format!("size:{pts}"), *label, true, *pts == size_now, None::<&str>))
+        .collect::<Result<_, _>>()?;
+    let size_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = sizes.iter().map(|b| b as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
+    let size_menu = Submenu::with_items(app, "Velikost", true, &size_refs)?;
     let quit = MenuItem::with_id(app, "quit", "Ukončit Wisp Buddy", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&summon, &talk, &studio, &sleep, &motion, &climb, &wisp_link, &phone, &bedtime, &PredefinedMenuItem::separator(app)?, &quit])?;
+    let menu = Menu::with_items(app, &[&summon, &talk, &studio, &size_menu, &sleep, &motion, &climb, &wisp_link, &phone, &bedtime, &PredefinedMenuItem::separator(app)?, &quit])?;
 
     let sleep_item = sleep.clone();
     let motion_item = motion.clone();
@@ -103,6 +112,14 @@ fn tray(app: &App) -> tauri::Result<()> {
                 let on = climb_item.is_checked().unwrap_or(true);
                 pet::set_climb(on);
                 config::set_field(app, "climb", serde_json::Value::Bool(on));
+            }
+            id if id.starts_with("size:") => {
+                let pts: u32 = id[5..].parse().unwrap_or(140);
+                for b in &sizes {
+                    let _ = b.set_checked(b.id().as_ref() == id);
+                }
+                pet::set_size(app, pts);
+                config::set_field(app, "size", serde_json::Value::from(pts));
             }
             id if id.starts_with("bed:") => {
                 let choice = &id[4..];
