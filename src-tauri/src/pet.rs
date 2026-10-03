@@ -390,6 +390,17 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
                     p.mode = Mode::Idle;
                     p.until = now + Duration::from_secs(2);
                 } else if p.mode != Mode::Sleep {
+                    // A mouse moving nearby gets noticed now, not when the current rest ends.
+                    if !still() && (p.mode == Mode::Idle || p.mode == Mode::Sit) && p.cursor_moved.elapsed() < Duration::from_millis(400) {
+                        if let Some(c) = cursor {
+                            let (mx, my) = (c.x / a.scale, c.y / a.scale);
+                            let feet = p.y + SIZE * FEET;
+                            let dx = mx - (p.x + SIZE / 2.0);
+                            if my > feet - 320.0 && my < feet + 40.0 && dx.abs() > 110.0 && dx.abs() < 600.0 && p.until > now + Duration::from_millis(800) {
+                                p.until = now;
+                            }
+                        }
+                    }
                     if now >= p.until {
                         // Sometimes up onto a window instead of another stroll.
                         if CLIMB.load(Ordering::Relaxed) && !still() && rand() < jump_chance() && jump_up(p, ledges) {
