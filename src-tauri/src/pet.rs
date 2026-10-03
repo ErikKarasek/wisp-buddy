@@ -98,6 +98,8 @@ struct Pet {
     /// when the window is dragged.
     on: Option<u32>,
     ledge_x1: f64,
+    /// Where its eyes were last told to look (towards the mouse), to send only changes.
+    look_sent: Option<(f64, f64)>,
     sent: Option<(Mode, f64)>,
 }
 
@@ -153,7 +155,7 @@ fn jump_chance() -> f64 {
     if demo() {
         0.6
     } else {
-        0.14
+        0.25
     }
 }
 
@@ -190,28 +192,65 @@ fn still() -> bool {
 }
 
 /// Pick the next calm thing to do: walk somewhere, stand, or sit for a while.
-fn next_activity(p: &mut Pet, a: &Area) {
+/// Pick the next thing to do, and the reaction it comes with (a little game is one).
+fn next_activity(p: &mut Pet, a: &Area, cursor: Option<(f64, f64)>) -> Option<&'static str> {
     let now = Instant::now();
     if still() {
         p.mode = Mode::Idle;
         p.until = now + Duration::from_secs(3600);
-        return;
+        return None;
+    }
+    let cx = p.x + SIZE / 2.0;
+    let feet = p.y + SIZE * FEET;
+    // You are around: the mouse moved in the last few seconds, low on the screen, near enough
+    // to bother about. Then it comes over, or sits down next to a mouse that has stopped.
+    if let Some((mx, my)) = cursor {
+        let lively = p.cursor_moved.elapsed() < Duration::from_secs(4);
+        let near_floor = my > feet - 320.0 && my < feet + 40.0;
+        let dx = mx - cx;
+        if near_floor && dx.abs() < 600.0 {
+            if lively && dx.abs() > 110.0 && rand() < 0.6 {
+                p.mode = Mode::Walk;
+                p.facing = dx.signum();
+                p.until = now + Duration::from_secs_f64((dx.abs() - 80.0) / WALK_SPEED);
+                return None;
+            }
+            if !lively && p.cursor_moved.elapsed() < Duration::from_secs(30) && dx.abs() <= 160.0 && rand() < 0.5 {
+                p.mode = Mode::Sit;
+                p.until = now + Duration::from_secs_f64(8.0 + rand() * 8.0);
+                return None;
+            }
+        }
     }
     let r = rand();
-    if r < 0.45 {
+    // Now and then a little game on its own: a hop, a somersault, a wiggle.
+    if r < 0.12 {
+        p.mode = Mode::Idle;
+        p.until = now + Duration::from_secs_f64(2.0 + rand() * 2.0);
+        let game = rand();
+        if game < 0.4 {
+            p.mode = Mode::Fall;
+            p.vx = 0.0;
+            p.vy = -440.0;
+            return Some("hop");
+        }
+        return Some(if game < 0.7 { "spin" } else { "wiggle" });
+    }
+    if r < 0.5 {
         p.mode = Mode::Walk;
         // Head away from a nearby edge, otherwise either way.
         let room_left = p.x - a.left;
         let room_right = a.right - SIZE - p.x;
         p.facing = if room_left < 120.0 { 1.0 } else if room_right < 120.0 { -1.0 } else if rand() < 0.5 { -1.0 } else { 1.0 };
         p.until = now + Duration::from_secs_f64(3.0 + rand() * 6.0);
-    } else if r < 0.85 {
+    } else if r < 0.86 {
         p.mode = Mode::Idle;
         p.until = now + Duration::from_secs_f64(3.0 + rand() * 5.0);
     } else {
         p.mode = Mode::Sit;
         p.until = now + Duration::from_secs_f64(6.0 + rand() * 8.0);
     }
+    None
 }
 
 fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f64) {
@@ -220,6 +259,7 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
     let mut ignore: Option<bool> = None;
     let mut moved_to: Option<(f64, f64)> = None;
     let mut emit: Option<PetState> = None;
+    let mut look_emit: Option<Option<(f64, f64)>> = None;
 
     with(|p| {
         let now = Instant::now();
@@ -355,7 +395,10 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
                         if CLIMB.load(Ordering::Relaxed) && !still() && rand() < jump_chance() && jump_up(p, ledges) {
                             react = Some("jump");
                         } else {
-                            next_activity(p, a);
+                            let c = cursor.map(|c| (c.x / a.scale, c.y / a.scale));
+                            if let Some(r) = next_activity(p, a, c) {
+                                react = Some(r);
+                            }
                         }
                     }
                     if p.mode == Mode::Walk {
@@ -405,6 +448,17 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
             }
         }
 
+        // Eyes on the mouse when it is about (moved lately, within reach); straight ahead otherwise.
+        let look = cursor.and_then(|c| {
+            let (dx, dy) = (c.x / a.scale - (p.x + SIZE / 2.0), c.y / a.scale - (p.y + SIZE * 0.6));
+            let near = dx.abs() < 500.0 && dy.abs() < 400.0 && p.cursor_moved.elapsed() < Duration::from_secs(6);
+            near.then(|| (((dx / 220.0).clamp(-1.0, 1.0) * 10.0).round() / 10.0, ((dy / 220.0).clamp(-1.0, 1.0) * 10.0).round() / 10.0))
+        });
+        if look != p.look_sent {
+            p.look_sent = look;
+            look_emit = Some(look);
+        }
+
         moved_to = Some((p.x, p.y));
         let facing = if p.mode == Mode::Fall && p.vx.abs() > 30.0 { p.vx.signum() } else { p.facing };
         if p.sent != Some((p.mode, facing)) {
@@ -425,6 +479,9 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
     }
     if let Some(r) = react {
         let _ = app.emit_to("pet", "pet-react", r);
+    }
+    if let Some(look) = look_emit {
+        let _ = app.emit_to("pet", "pet-look", look.map(|(x, y)| [x, y]));
     }
 }
 
@@ -458,6 +515,7 @@ pub fn start(app: AppHandle) {
             cursor_moved: Instant::now(),
             on: None,
             ledge_x1: 0.0,
+            look_sent: None,
             sent: None,
         });
         let _ = win.show();

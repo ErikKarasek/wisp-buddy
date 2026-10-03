@@ -16,3 +16,18 @@ body {
 #buddy.held {
   cursor: grabbing;
 }
+
+/* A little game: a wiggle from side to side. */
+#buddy.wiggle {
+  animation: wiggle 0.9s ease-in-out;
+  transform-origin: 50% 92%;
+}
+@keyframes wiggle {
+  20% { transform: rotate(-9deg); }
+  40% { transform: rotate(8deg); }
+  60% { transform: rotate(-6deg); }
+  80% { transform: rotate(4deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #buddy.wiggle { animation: none; }
+}

@@ -89,32 +89,38 @@ pub fn list(app: &AppHandle) -> Vec<Reminder> {
     config::field(app, "reminders").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
 }
 
-fn store(app: &AppHandle, mut list: Vec<Reminder>) {
-    list.sort_by_key(|r| r.at);
-    config::set_field(app, "reminders", serde_json::to_value(list).unwrap_or(Value::Array(vec![])));
+/// Change the list as one step under the config's write lock, so the tray or a page saving at
+/// the same moment cannot undo it.
+fn change<R>(app: &AppHandle, f: impl FnOnce(&mut Vec<Reminder>) -> R) -> R {
+    let mut out = None;
+    config::update_field(app, "reminders", |v| {
+        let mut list: Vec<Reminder> = serde_json::from_value(v).unwrap_or_default();
+        out = Some(f(&mut list));
+        list.sort_by_key(|r| r.at);
+        serde_json::to_value(list).unwrap_or(Value::Array(vec![]))
+    });
+    out.expect("update_field runs the change")
 }
 
 fn new_id() -> String {
-    format!("{:x}", now_ms() ^ ((std::process::id() as i64) << 20))
+    // The clock plus a counter: two reminders made in the same millisecond still differ.
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{:x}-{n}", now_ms())
 }
 
 pub fn add(app: &AppHandle, at: i64, text: &str, repeat: Option<String>) -> Reminder {
     let r = Reminder { id: new_id(), at, text: text.trim().to_string(), repeat: repeat.filter(|r| r == "daily" || r == "weekdays") };
-    let mut all = list(app);
-    all.push(r.clone());
-    store(app, all);
+    change(app, |all| all.push(r.clone()));
     r
 }
 
 pub fn remove(app: &AppHandle, id: &str) -> bool {
-    let mut all = list(app);
-    let before = all.len();
-    all.retain(|r| r.id != id);
-    let gone = all.len() != before;
-    if gone {
-        store(app, all);
-    }
-    gone
+    change(app, |all| {
+        let before = all.len();
+        all.retain(|r| r.id != id);
+        all.len() != before
+    })
 }
 
 #[tauri::command]
@@ -189,21 +195,26 @@ pub fn start(app: AppHandle) {
             std::thread::sleep(Duration::from_secs(5));
             let now = now_ms();
 
-            // Reminders that are due: fire, then move a repeating one on or drop the rest.
-            let all = list(&app);
-            let (due, mut keep): (Vec<_>, Vec<_>) = all.into_iter().partition(|r| r.at <= now);
-            if !due.is_empty() {
+            // Reminders that are due: take them out (a repeating one moves on to its next time)
+            // in one locked step, then fire. A cheap look first, so a quiet minute writes nothing.
+            if list(&app).iter().any(|r| r.at <= now) {
+                let due = change(&app, |all| {
+                    let (due, mut keep): (Vec<_>, Vec<_>) = std::mem::take(all).into_iter().partition(|r| r.at <= now);
+                    for r in &due {
+                        if let Some(rep) = &r.repeat {
+                            let mut next = r.clone();
+                            while next.at <= now {
+                                next.at = next_after(next.at, rep);
+                            }
+                            keep.push(next);
+                        }
+                    }
+                    *all = keep;
+                    due
+                });
                 for r in &due {
                     fire(&app, Fired { text: r.text.clone(), late: ((now - r.at) / 60_000).max(0), bedtime: false });
-                    if let Some(rep) = &r.repeat {
-                        let mut next = r.clone();
-                        while next.at <= now {
-                            next.at = next_after(next.at, rep);
-                        }
-                        keep.push(next);
-                    }
                 }
-                store(&app, keep);
             }
 
             // Bedtime, once a night, only if someone is at the Mac (the mouse moved lately).

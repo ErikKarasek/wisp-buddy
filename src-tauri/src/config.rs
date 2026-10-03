@@ -3,7 +3,15 @@
 
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
+
+/// One writer at a time: the reminder thread, the tray and the pages all change this file.
+static WRITE: Mutex<()> = Mutex::new(());
+
+/// Fields Rust keeps (the tray and the reminder thread). A page saving its own part (the
+/// characters, what is worn) never overwrites these with the copy it loaded a moment ago.
+const RUST_OWNED: [&str; 5] = ["reminders", "bedtime", "climb", "wisp", "shapeMotion"];
 
 fn path(app: &AppHandle) -> Option<PathBuf> {
     Some(app.path().app_config_dir().ok()?.join("config.json"))
@@ -20,11 +28,30 @@ pub fn config_load(app: AppHandle) -> Value {
 /// Saves and tells every window, so the buddy puts on a new look the moment the studio saves.
 #[tauri::command]
 pub fn config_save(app: AppHandle, config: Value) -> Result<(), String> {
-    let p = path(&app).ok_or("no config folder")?;
+    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut config = config;
+    let current = config_load(app.clone());
+    if let (Value::Object(new), Value::Object(cur)) = (&mut config, &current) {
+        for key in RUST_OWNED {
+            match cur.get(key) {
+                Some(v) => {
+                    new.insert(key.to_string(), v.clone());
+                }
+                None => {
+                    new.remove(key);
+                }
+            }
+        }
+    }
+    write(&app, &config)
+}
+
+fn write(app: &AppHandle, config: &Value) -> Result<(), String> {
+    let p = path(app).ok_or("no config folder")?;
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let text = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    let text = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
     // Write beside and rename, so a crash mid-write never leaves half a file.
     let tmp = p.with_extension("json.tmp");
     std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
@@ -47,12 +74,26 @@ pub fn wisp_characters() -> Value {
 
 /// Change one top-level field and save, for the tray (the motion switch) without a page.
 pub fn set_field(app: &AppHandle, key: &str, value: Value) {
+    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let mut cfg = config_load(app.clone());
     if !cfg.is_object() {
         cfg = Value::Object(Default::default());
     }
     cfg[key] = value;
-    let _ = config_save(app.clone(), cfg);
+    let _ = write(app, &cfg);
+}
+
+/// Read, change and write one field as one step, for a change that depends on what is there
+/// (the reminder list), so nothing slips in between.
+pub fn update_field(app: &AppHandle, key: &str, f: impl FnOnce(Value) -> Value) {
+    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut cfg = config_load(app.clone());
+    if !cfg.is_object() {
+        cfg = Value::Object(Default::default());
+    }
+    let old = cfg.get(key).cloned().unwrap_or(Value::Null);
+    cfg[key] = f(old);
+    let _ = write(app, &cfg);
 }
 
 /// One top-level field, for the tray's initial state.
