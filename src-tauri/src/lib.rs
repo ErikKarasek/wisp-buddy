@@ -87,53 +87,65 @@ fn tray(app: &App) -> tauri::Result<()> {
         .icon_as_template(false)
         .tooltip("Wisp Buddy")
         .menu(&menu)
-        .on_menu_event(move |app, e| match e.id.as_ref() {
-            "summon" => pet::summon(app),
-            "studio" => open_studio(app),
-            "talk" => chat::open(app),
-            "sleep" => {
-                let asleep = pet::toggle_sleep();
-                let _ = sleep_item.set_checked(asleep);
-            }
-            "motion" => {
-                let on = motion_item.is_checked().unwrap_or(true);
-                config::set_field(app, "shapeMotion", serde_json::Value::Bool(on));
-            }
-            "wisp" => {
-                let on = wisp_item.is_checked().unwrap_or(true);
-                wisp::set_on(on);
-                config::set_field(app, "wisp", serde_json::Value::Bool(on));
-            }
-            "phone" => {
-                let on = phone_item.is_checked().unwrap_or(true);
-                config::set_field(app, "phone", serde_json::Value::Bool(on));
-            }
-            "climb" => {
-                let on = climb_item.is_checked().unwrap_or(true);
-                pet::set_climb(on);
-                config::set_field(app, "climb", serde_json::Value::Bool(on));
-            }
-            id if id.starts_with("size:") => {
-                let pts: u32 = id[5..].parse().unwrap_or(140);
-                for b in &sizes {
-                    let _ = b.set_checked(b.id().as_ref() == id);
-                }
-                pet::set_size(app, pts);
-                config::set_field(app, "size", serde_json::Value::from(pts));
-            }
-            id if id.starts_with("bed:") => {
-                let choice = &id[4..];
-                for b in &beds {
-                    let _ = b.set_checked(b.id().as_ref() == id);
-                }
-                let value = if choice == "off" { serde_json::Value::Null } else { serde_json::Value::String(choice.into()) };
-                config::set_field(app, "bedtime", value);
-            }
-            "quit" => app.exit(0),
-            _ => {}
-        })
         .build(app)?;
+    // The same menu opens on the buddy itself (pet_menu); one handler serves both.
+    app.manage(BuddyMenu(menu));
+    app.on_menu_event(move |app, e| match e.id.as_ref() {
+        "summon" => pet::summon(app),
+        "studio" => open_studio(app),
+        "talk" => chat::open(app),
+        "sleep" => {
+            let asleep = pet::toggle_sleep();
+            let _ = sleep_item.set_checked(asleep);
+        }
+        "motion" => {
+            let on = motion_item.is_checked().unwrap_or(true);
+            config::set_field(app, "shapeMotion", serde_json::Value::Bool(on));
+        }
+        "wisp" => {
+            let on = wisp_item.is_checked().unwrap_or(true);
+            wisp::set_on(on);
+            config::set_field(app, "wisp", serde_json::Value::Bool(on));
+        }
+        "phone" => {
+            let on = phone_item.is_checked().unwrap_or(true);
+            config::set_field(app, "phone", serde_json::Value::Bool(on));
+        }
+        "climb" => {
+            let on = climb_item.is_checked().unwrap_or(true);
+            pet::set_climb(on);
+            config::set_field(app, "climb", serde_json::Value::Bool(on));
+        }
+        id if id.starts_with("size:") => {
+            let pts: u32 = id[5..].parse().unwrap_or(140);
+            for b in &sizes {
+                let _ = b.set_checked(b.id().as_ref() == id);
+            }
+            pet::set_size(app, pts);
+            config::set_field(app, "size", serde_json::Value::from(pts));
+        }
+        id if id.starts_with("bed:") => {
+            let choice = &id[4..];
+            for b in &beds {
+                let _ = b.set_checked(b.id().as_ref() == id);
+            }
+            let value = if choice == "off" { serde_json::Value::Null } else { serde_json::Value::String(choice.into()) };
+            config::set_field(app, "bedtime", value);
+        }
+        "quit" => app.exit(0),
+        _ => {}
+    });
     Ok(())
+}
+
+struct BuddyMenu(Menu<tauri::Wry>);
+
+/// Right-click on the buddy: the tray's menu, under the mouse.
+#[tauri::command]
+fn pet_menu(app: AppHandle) {
+    if let (Some(win), Some(menu)) = (app.get_webview_window("pet"), app.try_state::<BuddyMenu>()) {
+        let _ = win.popup_menu(&menu.0);
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -141,7 +153,7 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![pet::grab, pet::release, config::config_load, config::config_save, config::wisp_characters,
             chat::chat_send, chat::chat_close, chat::gemini_key_set, chat::gemini_key_present, chat::gemini_key_forget, open_url,
-            reminders::reminder_list, reminders::reminder_remove, reminders::reminder_snooze])
+            reminders::reminder_list, reminders::reminder_remove, reminders::reminder_snooze, pet_menu])
         .setup(|app| {
             // A buddy, not an app to switch to: no Dock icon, no menu bar of its own.
             #[cfg(target_os = "macos")]
