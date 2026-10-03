@@ -46,6 +46,22 @@ fn fetch(key: &str) -> Option<Value> {
     serde_json::from_str(body).ok().filter(|v: &Value| v["ready"] == Value::Bool(true))
 }
 
+/// A message through Wisp to wherever Wisp sends news: a notification on the Mac and, when
+/// Wisp's Telegram is set up, the phone. POST /notify needs no key (local programs only, which
+/// Wisp checks). `urgent` gets through a macOS Focus too. Returns whether Wisp took it.
+pub fn notify(title: &str, text: &str) -> bool {
+    let body = serde_json::json!({ "title": title, "text": text, "urgent": true }).to_string();
+    let Ok(mut s) = TcpStream::connect_timeout(&([127, 0, 0, 1], PORT).into(), Duration::from_millis(500)) else { return false };
+    let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
+    let sent = write!(
+        s,
+        "POST /notify HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut raw = String::new();
+    sent.is_ok() && s.read_to_string(&mut raw).is_ok() && raw.starts_with("HTTP/1.1 200")
+}
+
 /// Lines for the chat's instructions: what the agents are doing right now.
 pub fn summary_for_chat() -> Option<String> {
     let v = LATEST.lock().ok()?.clone()?;

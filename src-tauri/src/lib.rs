@@ -52,6 +52,8 @@ fn tray(app: &App) -> tauri::Result<()> {
     let linked = config::field(app.handle(), "wisp").and_then(|v| v.as_bool()).unwrap_or(true);
     wisp::set_on(linked);
     let wisp_link = CheckMenuItem::with_id(app, "wisp", "Propojit s Wispem", true, linked, None::<&str>)?;
+    let to_phone = config::field(app.handle(), "phone").and_then(|v| v.as_bool()).unwrap_or(true);
+    let phone = CheckMenuItem::with_id(app, "phone", "Připomínky i na telefon", true, to_phone, None::<&str>)?;
     // When to be sent to bed, if at all.
     let bed_now = reminders::bedtime_setting(app.handle());
     let beds: Vec<CheckMenuItem<tauri::Wry>> = [("23:00", "Ve 23:00"), ("00:00", "O půlnoci"), ("01:00", "V 1:00"), ("off", "Vůbec")]
@@ -64,12 +66,13 @@ fn tray(app: &App) -> tauri::Result<()> {
     let bed_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = beds.iter().map(|b| b as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
     let bedtime = Submenu::with_items(app, "Poslat mě spát", true, &bed_refs)?;
     let quit = MenuItem::with_id(app, "quit", "Ukončit Wisp Buddy", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&summon, &talk, &studio, &sleep, &motion, &climb, &wisp_link, &bedtime, &PredefinedMenuItem::separator(app)?, &quit])?;
+    let menu = Menu::with_items(app, &[&summon, &talk, &studio, &sleep, &motion, &climb, &wisp_link, &phone, &bedtime, &PredefinedMenuItem::separator(app)?, &quit])?;
 
     let sleep_item = sleep.clone();
     let motion_item = motion.clone();
     let climb_item = climb.clone();
     let wisp_item = wisp_link.clone();
+    let phone_item = phone.clone();
     TrayIconBuilder::with_id("buddy")
         .icon(app.default_window_icon().cloned().expect("an app icon"))
         .icon_as_template(false)
@@ -91,6 +94,10 @@ fn tray(app: &App) -> tauri::Result<()> {
                 let on = wisp_item.is_checked().unwrap_or(true);
                 wisp::set_on(on);
                 config::set_field(app, "wisp", serde_json::Value::Bool(on));
+            }
+            "phone" => {
+                let on = phone_item.is_checked().unwrap_or(true);
+                config::set_field(app, "phone", serde_json::Value::Bool(on));
             }
             "climb" => {
                 let on = climb_item.is_checked().unwrap_or(true);

@@ -150,6 +150,13 @@ struct Fired {
 }
 
 fn fire(app: &AppHandle, fired: Fired) {
+    // On the phone too (tray: Připomínky i na telefon), through Wisp when it runs. Bedtime stays
+    // on the Mac: it is about being at the Mac.
+    let to_phone = config::field(app, "phone").and_then(|v| v.as_bool()).unwrap_or(true);
+    if !fired.bedtime && to_phone {
+        let text = fired.text.clone();
+        std::thread::spawn(move || crate::wisp::notify("⏰ Wisp Buddy", &text));
+    }
     crate::pet::wake_for_reminder();
     let _ = app.emit_to("pet", "pet-react", if fired.bedtime { "yawn" } else { "remind" });
     crate::chat::open_quietly(app);
