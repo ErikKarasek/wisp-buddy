@@ -4596,6 +4596,7 @@ version = "0.1.0"
 dependencies = [
  "keyring",
  "libc",
+ "objc2",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

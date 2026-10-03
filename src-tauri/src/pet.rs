@@ -5,7 +5,9 @@
 //! Distances are in logical points and converted with the monitor's scale when the window
 //! moves, so the buddy walks at the same pace on a Retina screen and an external one.
 
+use crate::windows::Ledge;
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
@@ -17,6 +19,22 @@ const WALK_SPEED: f64 = 42.0;
 const GRAVITY: f64 = 2600.0;
 /// A landing faster than this bounces, and makes it dizzy.
 const HARD_LANDING: f64 = 900.0;
+/// How high it can jump up onto a window, in points.
+const MAX_JUMP: f64 = 620.0;
+
+/// Whether it climbs onto windows (the tray's switch). Off, windows are just pictures to it.
+static CLIMB: AtomicBool = AtomicBool::new(true);
+pub fn set_climb(on: bool) {
+    CLIMB.store(on, Ordering::Relaxed);
+    if !on {
+        // Whoever stands on a window now steps off it.
+        with(|p| {
+            if p.on.is_some() {
+                p.on = None;
+            }
+        });
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Serialize, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -76,6 +94,10 @@ struct Pet {
     /// Where the mouse was and when it last moved: someone is at the Mac.
     cursor: (f64, f64),
     cursor_moved: Instant,
+    /// The window it stands on, and where that window's edge started last frame, to ride along
+    /// when the window is dragged.
+    on: Option<u32>,
+    ledge_x1: f64,
     sent: Option<(Mode, f64)>,
 }
 
@@ -118,6 +140,31 @@ fn floor(a: &Area) -> f64 {
     a.bottom - SIZE * FEET
 }
 
+/// Now and then, a jump up onto a window it can reach. Returns whether it jumped.
+fn jump_up(p: &mut Pet, ledges: &[Ledge]) -> bool {
+    let feet = p.y + SIZE * FEET;
+    let cx = p.x + SIZE / 2.0;
+    let reachable: Vec<&Ledge> = ledges
+        .iter()
+        .filter(|l| l.x2 - l.x1 >= 180.0 && feet - l.y > 60.0 && feet - l.y < MAX_JUMP && ((l.x1 + l.x2) / 2.0 - cx).abs() < 700.0)
+        .collect();
+    if reachable.is_empty() {
+        return false;
+    }
+    let l = reachable[(rand() * reachable.len() as f64) as usize % reachable.len()];
+    // Up to a little above the edge, then down onto it: the time decides the sideways speed.
+    let rise = feet - l.y + 36.0;
+    let vy = (2.0 * GRAVITY * rise).sqrt();
+    let t = vy / GRAVITY + (2.0 * 36.0 / GRAVITY).sqrt();
+    let target = l.x1 + 50.0 + rand() * (l.x2 - l.x1 - 100.0);
+    p.mode = Mode::Fall;
+    p.on = None;
+    p.vy = -vy;
+    p.vx = (target - cx) / t;
+    p.facing = if p.vx < 0.0 { -1.0 } else { 1.0 };
+    true
+}
+
 /// Pick the next calm thing to do: walk somewhere, stand, or sit for a while.
 fn next_activity(p: &mut Pet, a: &Area) {
     let now = Instant::now();
@@ -138,7 +185,7 @@ fn next_activity(p: &mut Pet, a: &Area) {
     }
 }
 
-fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, dt: f64) {
+fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f64) {
     let cursor = app.cursor_position().ok();
     let mut react: Option<&str> = None;
     let mut ignore: Option<bool> = None;
@@ -162,8 +209,13 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, dt: f64) {
             }
         }
 
+        let cx = p.x + SIZE / 2.0;
+        // Where its feet would rest on each window edge, if it stands on one.
+        let stand_on = |l: &Ledge| l.y - SIZE * FEET;
+
         match p.mode {
             Mode::Held => {
+                p.on = None;
                 if let Some(c) = cursor {
                     let (cx, cy) = (c.x / a.scale, c.y / a.scale);
                     let (nx, ny) = (cx - p.grab.0, cy - p.grab.1);
@@ -175,9 +227,28 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, dt: f64) {
                 }
             }
             Mode::Fall => {
+                let feet_before = p.y + SIZE * FEET;
                 p.vy += GRAVITY * dt;
                 p.x += p.vx * dt;
                 p.y += p.vy * dt;
+                // Coming down through a window's top edge: land on it, the highest one first.
+                let mut surface = ground;
+                if p.vy > 0.0 {
+                    let feet_after = p.y + SIZE * FEET;
+                    let cx = p.x + SIZE / 2.0;
+                    let hit = ledges
+                        .iter()
+                        .filter(|l| cx > l.x1 + 12.0 && cx < l.x2 - 12.0 && feet_before <= l.y + 1.0 && feet_after >= l.y && stand_on(l) < ground)
+                        .min_by(|a, b| a.y.total_cmp(&b.y));
+                    if let Some(l) = hit {
+                        surface = stand_on(l);
+                        p.on = Some(l.id);
+                        p.ledge_x1 = l.x1;
+                    }
+                }
+                if surface == ground && p.y >= ground {
+                    p.on = None;
+                }
                 if p.x < min_x || p.x > max_x {
                     p.x = p.x.clamp(min_x, max_x);
                     p.vx = -p.vx * 0.5;
@@ -186,8 +257,8 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, dt: f64) {
                     p.y = a.top;
                     p.vy = p.vy.abs() * 0.3;
                 }
-                if p.y >= ground {
-                    p.y = ground;
+                if p.y >= surface {
+                    p.y = surface;
                     if p.vy > HARD_LANDING {
                         // Bounce once, a bit dazed.
                         p.vy = -p.vy * 0.32;
@@ -206,7 +277,33 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, dt: f64) {
                 }
             }
             _ => {
-                // On the floor. At night it sleeps, unless woken a moment ago or talking.
+                // What it stands on: a window's edge (riding along when the window moves), or the
+                // floor. A window that closed, shrank or got covered under its feet drops it.
+                let mut support = ground;
+                let mut edge: Option<Ledge> = None;
+                if let Some(id) = p.on {
+                    let mine: Vec<&Ledge> = ledges.iter().filter(|l| l.id == id).collect();
+                    // The stretch it was on, followed by how far its start moved.
+                    let found = mine
+                        .iter()
+                        .find(|l| cx + (l.x1 - p.ledge_x1) > l.x1 - 4.0 && cx + (l.x1 - p.ledge_x1) < l.x2 + 4.0)
+                        .or_else(|| mine.iter().find(|l| cx > l.x1 - 4.0 && cx < l.x2 + 4.0));
+                    match found {
+                        Some(l) => {
+                            let dx = l.x1 - p.ledge_x1;
+                            if dx.abs() < 400.0 {
+                                p.x += dx;
+                            }
+                            p.ledge_x1 = l.x1;
+                            support = stand_on(l);
+                            // Ridden up or down with the window: no fall, just follow.
+                            p.y = support;
+                            edge = Some(**l);
+                        }
+                        None => p.on = None,
+                    }
+                }
+                // On its feet. At night it sleeps, unless woken a moment ago or talking.
                 let night = !p.talking && (p.sleep_by_hand || (is_night() && p.awake_until.map_or(true, |t| now > t)));
                 if night && p.mode != Mode::Sleep {
                     p.mode = Mode::Sleep;
@@ -214,8 +311,8 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, dt: f64) {
                     p.mode = Mode::Idle;
                     p.until = now;
                 }
-                // Moved off the floor (a monitor change, a Dock that grew): fall back down.
-                if (p.y - ground).abs() > 2.0 {
+                // Off its support (a monitor change, a Dock that grew, a window gone): fall.
+                if (p.y - support).abs() > 2.0 {
                     p.mode = Mode::Fall;
                     p.vx = 0.0;
                     p.vy = 0.0;
@@ -225,13 +322,34 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, dt: f64) {
                     p.until = now + Duration::from_secs(2);
                 } else if p.mode != Mode::Sleep {
                     if now >= p.until {
-                        next_activity(p, a);
+                        // Sometimes up onto a window instead of another stroll.
+                        if CLIMB.load(Ordering::Relaxed) && rand() < 0.14 && jump_up(p, ledges) {
+                            react = Some("jump");
+                        } else {
+                            next_activity(p, a);
+                        }
                     }
                     if p.mode == Mode::Walk {
                         p.x += p.facing * WALK_SPEED * dt;
                         if p.x <= min_x || p.x >= max_x {
                             p.x = p.x.clamp(min_x, max_x);
                             p.facing = -p.facing;
+                        }
+                        // At the end of a window's edge: mostly turn round, sometimes hop off.
+                        if let Some(l) = edge {
+                            let cx = p.x + SIZE / 2.0;
+                            if cx < l.x1 + 10.0 || cx > l.x2 - 10.0 {
+                                if rand() < 0.3 {
+                                    p.mode = Mode::Fall;
+                                    p.on = None;
+                                    p.vx = p.facing * 160.0;
+                                    p.vy = -260.0;
+                                    react = Some("jump");
+                                } else {
+                                    p.x = (cx.clamp(l.x1 + 10.0, l.x2 - 10.0)) - SIZE / 2.0;
+                                    p.facing = -p.facing;
+                                }
+                            }
                         }
                     }
                 }
@@ -308,11 +426,15 @@ pub fn start(app: AppHandle) {
             last_click: None,
             cursor: (0.0, 0.0),
             cursor_moved: Instant::now(),
+            on: None,
+            ledge_x1: 0.0,
             sent: None,
         });
         let _ = win.show();
         let mut last = Instant::now();
         let mut area_at = Instant::now();
+        let mut ledges: Vec<Ledge> = vec![];
+        let mut ledges_at = Instant::now() - Duration::from_secs(1);
         loop {
             std::thread::sleep(Duration::from_millis(16));
             let now = Instant::now();
@@ -325,7 +447,20 @@ pub fn start(app: AppHandle) {
                     area = a;
                 }
             }
-            step(&app, &win, &area, dt);
+            // Windows move, open and close: look five times a second. Only edges with room for
+            // it above, on this screen, and above the floor count.
+            if now.duration_since(ledges_at) > Duration::from_millis(200) {
+                ledges_at = now;
+                ledges = if CLIMB.load(Ordering::Relaxed) {
+                    crate::windows::ledges()
+                        .into_iter()
+                        .filter(|l| l.y - SIZE * FEET >= area.top && l.y < area.bottom - 40.0 && l.x2 > area.left && l.x1 < area.right)
+                        .collect()
+                } else {
+                    vec![]
+                };
+            }
+            step(&app, &win, &area, &ledges, dt);
         }
     });
 }
