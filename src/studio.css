@@ -1,0 +1,260 @@
+/* The studio window: dark, like Wisp. The buddy's own window stays transparent (style.css). */
+body.studio {
+  --bg: #16171b;
+  --panel: #1e2026;
+  --panel-2: #262932;
+  --line: #2c2f38;
+  --text: #e8eaf0;
+  --muted: #9aa0ad;
+  --faint: #6b7080;
+  --accent: #8b9cff;
+  margin: 0;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  display: grid;
+  grid-template-columns: 252px minmax(0, 1fr);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.studio button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* ----- gallery ----- */
+.gallery {
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+  padding: 14px 12px 20px;
+}
+.gallery h3 {
+  margin: 6px 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.gallery h3.from-wisp {
+  margin-top: 22px;
+}
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.tile {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  padding: 8px 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+}
+.tile span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tile:hover {
+  background: var(--panel);
+}
+.tile.on {
+  border-color: var(--accent);
+  background: var(--panel);
+  color: var(--text);
+}
+.tile i {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-style: normal;
+  font-size: 9px;
+  color: var(--accent);
+}
+.tile.add b {
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  font-size: 26px;
+  font-weight: 300;
+  border: 1px dashed var(--line);
+  border-radius: 50%;
+}
+
+/* ----- editor ----- */
+.editor {
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 20px;
+  padding: 18px 20px;
+  align-items: start;
+}
+.preview {
+  position: sticky;
+  top: 0;
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+}
+.preview .m.big {
+  width: 190px;
+  height: 190px;
+  border-radius: 22px;
+  background: radial-gradient(circle at 50% 62%, #262a35, #191a1f 72%);
+}
+.moments {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+}
+.moments button,
+.btns button {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 99px;
+  padding: 4px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.moments button.on {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.badge {
+  margin: 0;
+  font-size: 12px;
+  color: var(--accent);
+}
+.form {
+  display: grid;
+  gap: 14px;
+}
+.row {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.row input[type="text"] {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 10px;
+  color: var(--text);
+  font: inherit;
+}
+.row input[type="text"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.shapes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(58px, 1fr));
+  gap: 6px;
+}
+.shape {
+  display: grid;
+  justify-items: center;
+  gap: 1px;
+  padding: 6px 2px 4px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--panel);
+}
+.shape small {
+  font-size: 10px;
+  color: var(--faint);
+}
+.shape:hover {
+  background: var(--panel-2);
+}
+.shape.on {
+  border-color: var(--accent);
+}
+.shape.on small {
+  color: var(--text);
+}
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sw {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  padding: 0;
+  box-shadow: inset 0 0 0 1px #ffffff1a;
+}
+.sw.on {
+  border-color: var(--text);
+}
+.sw.custom {
+  position: relative;
+  overflow: hidden;
+  background-image: conic-gradient(from 0deg, #f66, #fd5, #6e8, #5bf, #b7f, #f66) !important;
+  cursor: pointer;
+}
+.sw.custom input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.slider .range {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr) 54px;
+  align-items: center;
+  gap: 8px;
+}
+.slider small {
+  font-size: 11px;
+  color: var(--faint);
+}
+.slider small:last-child {
+  text-align: right;
+}
+.slider input[type="range"] {
+  accent-color: var(--accent);
+}
+.note {
+  margin: 0;
+  min-height: 1.4em;
+  font-size: 12px;
+  color: var(--muted);
+}
+.btns {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.btns .spacer {
+  flex: 1;
+}
+.btns button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #11131a;
+  font-weight: 600;
+}
+.btns button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.btns button[hidden] {
+  display: none;
+}
