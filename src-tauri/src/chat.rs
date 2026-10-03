@@ -36,6 +36,10 @@ pub fn gemini_key_set(key: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn gemini_key_present() -> bool {
+    // Recording a video: no Keychain prompt in the middle of the clip (a new build asks again).
+    if std::env::var("WISP_BUDDY_DEMO").is_ok_and(|v| v == "1") {
+        return true;
+    }
     key().is_some()
 }
 
