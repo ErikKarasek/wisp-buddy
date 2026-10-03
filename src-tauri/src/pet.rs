@@ -140,11 +140,17 @@ fn floor(a: &Area) -> f64 {
     a.bottom - SIZE * FEET
 }
 
+/// Recording a video (WISP_BUDDY_DEMO=1): jumps more, and starts on the floor a third of the
+/// way across, beside whatever window the clip is about, so it has to jump up to it.
+fn demo() -> bool {
+    static DEMO: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DEMO.get_or_init(|| std::env::var("WISP_BUDDY_DEMO").is_ok_and(|v| v == "1"))
+}
+
 /// How often a change of activity is a jump instead. WISP_BUDDY_DEMO=1 (for recording a video)
 /// makes it most of the time, so a short clip shows it.
 fn jump_chance() -> f64 {
-    static DEMO: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *DEMO.get_or_init(|| std::env::var("WISP_BUDDY_DEMO").is_ok_and(|v| v == "1")) {
+    if demo() {
         0.6
     } else {
         0.14
@@ -416,9 +422,10 @@ pub fn start(app: AppHandle) {
         // The config's size comes out a little smaller on some screens; the body maths needs it exact.
         let _ = win.set_size(tauri::LogicalSize::new(SIZE, SIZE));
         let Some(mut area) = area_of(&win) else { return };
-        // Drop in from above the middle of the screen.
+        // Drop in from above the middle of the screen (a third of the way across for a video).
+        let start = if demo() { area.left + (area.right - area.left) / 3.0 } else { (area.left + area.right) / 2.0 };
         *PET.lock().unwrap() = Some(Pet {
-            x: (area.left + area.right) / 2.0 - SIZE / 2.0,
+            x: start - SIZE / 2.0,
             y: area.top,
             vx: 0.0,
             vy: 0.0,
