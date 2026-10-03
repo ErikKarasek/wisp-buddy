@@ -140,6 +140,17 @@ fn floor(a: &Area) -> f64 {
     a.bottom - SIZE * FEET
 }
 
+/// How often a change of activity is a jump instead. WISP_BUDDY_DEMO=1 (for recording a video)
+/// makes it most of the time, so a short clip shows it.
+fn jump_chance() -> f64 {
+    static DEMO: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *DEMO.get_or_init(|| std::env::var("WISP_BUDDY_DEMO").is_ok_and(|v| v == "1")) {
+        0.6
+    } else {
+        0.14
+    }
+}
+
 /// Now and then, a jump up onto a window it can reach. Returns whether it jumped.
 fn jump_up(p: &mut Pet, ledges: &[Ledge]) -> bool {
     let feet = p.y + SIZE * FEET;
@@ -323,7 +334,7 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
                 } else if p.mode != Mode::Sleep {
                     if now >= p.until {
                         // Sometimes up onto a window instead of another stroll.
-                        if CLIMB.load(Ordering::Relaxed) && rand() < 0.14 && jump_up(p, ledges) {
+                        if CLIMB.load(Ordering::Relaxed) && rand() < jump_chance() && jump_up(p, ledges) {
                             react = Some("jump");
                         } else {
                             next_activity(p, a);
