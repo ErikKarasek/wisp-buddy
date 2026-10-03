@@ -4,8 +4,9 @@
 mod chat;
 mod config;
 mod pet;
+mod reminders;
 
-use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{App, AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -43,8 +44,19 @@ fn tray(app: &App) -> tauri::Result<()> {
     let sleep = CheckMenuItem::with_id(app, "sleep", "Spát", true, false, None::<&str>)?;
     let moving = config::field(app.handle(), "shapeMotion").and_then(|v| v.as_bool()).unwrap_or(true);
     let motion = CheckMenuItem::with_id(app, "motion", "Tvary se hýbou", true, moving, None::<&str>)?;
+    // When to be sent to bed, if at all.
+    let bed_now = reminders::bedtime_setting(app.handle());
+    let beds: Vec<CheckMenuItem<tauri::Wry>> = [("23:00", "Ve 23:00"), ("00:00", "O půlnoci"), ("01:00", "V 1:00"), ("off", "Vůbec")]
+        .iter()
+        .map(|(id, label)| {
+            let on = bed_now.as_deref().unwrap_or("off") == *id;
+            CheckMenuItem::with_id(app, format!("bed:{id}"), *label, true, on, None::<&str>)
+        })
+        .collect::<Result<_, _>>()?;
+    let bed_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = beds.iter().map(|b| b as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
+    let bedtime = Submenu::with_items(app, "Poslat mě spát", true, &bed_refs)?;
     let quit = MenuItem::with_id(app, "quit", "Ukončit Wisp Buddy", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&summon, &talk, &studio, &sleep, &motion, &PredefinedMenuItem::separator(app)?, &quit])?;
+    let menu = Menu::with_items(app, &[&summon, &talk, &studio, &sleep, &motion, &bedtime, &PredefinedMenuItem::separator(app)?, &quit])?;
 
     let sleep_item = sleep.clone();
     let motion_item = motion.clone();
@@ -65,6 +77,14 @@ fn tray(app: &App) -> tauri::Result<()> {
                 let on = motion_item.is_checked().unwrap_or(true);
                 config::set_field(app, "shapeMotion", serde_json::Value::Bool(on));
             }
+            id if id.starts_with("bed:") => {
+                let choice = &id[4..];
+                for b in &beds {
+                    let _ = b.set_checked(b.id().as_ref() == id);
+                }
+                let value = if choice == "off" { serde_json::Value::Null } else { serde_json::Value::String(choice.into()) };
+                config::set_field(app, "bedtime", value);
+            }
             "quit" => app.exit(0),
             _ => {}
         })
@@ -76,13 +96,15 @@ fn tray(app: &App) -> tauri::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![pet::grab, pet::release, config::config_load, config::config_save, config::wisp_characters,
-            chat::chat_send, chat::chat_close, chat::gemini_key_set, chat::gemini_key_present, chat::gemini_key_forget, open_url])
+            chat::chat_send, chat::chat_close, chat::gemini_key_set, chat::gemini_key_present, chat::gemini_key_forget, open_url,
+            reminders::reminder_list, reminders::reminder_remove, reminders::reminder_snooze])
         .setup(|app| {
             // A buddy, not an app to switch to: no Dock icon, no menu bar of its own.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             tray(app)?;
             pet::start(app.handle().clone());
+            reminders::start(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

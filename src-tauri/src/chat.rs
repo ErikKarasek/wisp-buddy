@@ -69,54 +69,155 @@ občas si sedneš a v noci spíš. Člověk tě může chytit myší a hodit, a 
 Odpovídej česky (anglicky jen když on píše anglicky), krátce, jednou až třemi větami, jako kamarád. \
 Buď milý a trochu hravý, ale ne přeslazený. Žádné odrážky ani nadpisy, žádné emoji navíc.\n\
 Když nevíš, řekni to. Nevymýšlej si, co nevidíš: nevidíš obrazovku, soubory ani co člověk dělá.\n\
-Teď je {}.",
-        now_text()
+Umíš si pamatovat připomínky: když o ni člověk požádá, nastav ji nástrojem set_reminder a pak krátce \
+potvrď, kdy se ozveš. Čas počítej od teď. Když neřekne přesný čas (\"odpoledne\", \"večer\"), zeptej se.\n\
+Teď je {} ({}).",
+        now_text(),
+        crate::reminders::now_iso()
     )
 }
 
-/// One answer from Gemini to the conversation so far. Tries the next model when one is busy.
+/// What the buddy can do while talking: keep reminders.
+fn tools() -> Value {
+    json!([
+        {
+            "type": "function",
+            "function": {
+                "name": "set_reminder",
+                "description": "Save a reminder. The buddy wakes up at that time and shows the text in its bubble.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "when": { "type": "string", "description": "Local date and time, YYYY-MM-DDTHH:MM. Work it out from the current time in the instructions." },
+                        "text": { "type": "string", "description": "What to remind of, short, in the user's words and language" },
+                        "repeat": { "type": "string", "enum": ["none", "daily", "weekdays"] }
+                    },
+                    "required": ["when", "text"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_reminders",
+                "description": "The reminders that are set, with their ids and times.",
+                "parameters": { "type": "object", "properties": {} }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "cancel_reminder",
+                "description": "Delete a reminder by its id (from list_reminders).",
+                "parameters": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] }
+            }
+        }
+    ])
+}
+
+/// Runs one tool the model asked for and says how it went, for the model to read.
+fn run_tool(app: &AppHandle, name: &str, args: &Value) -> Value {
+    let reminders = crate::reminders::reminder_list;
+    match name {
+        "set_reminder" => {
+            let when = args["when"].as_str().unwrap_or("");
+            let text = args["text"].as_str().unwrap_or("").trim();
+            let Some(at) = crate::reminders::parse_local(when) else { return json!({ "error": "when must be YYYY-MM-DDTHH:MM" }) };
+            if text.is_empty() {
+                return json!({ "error": "text is empty" });
+            }
+            if at < crate::reminders::now_ms() - 60_000 {
+                return json!({ "error": "that time has already passed" });
+            }
+            let repeat = args["repeat"].as_str().filter(|r| *r != "none").map(String::from);
+            let r = crate::reminders::add(app, at, text, repeat);
+            let _ = app.emit("reminders-changed", ());
+            json!({ "ok": true, "id": r.id, "when": crate::reminders::describe(r.at), "repeat": r.repeat })
+        }
+        "list_reminders" => json!({ "reminders": reminders(app.clone()) }),
+        "cancel_reminder" => {
+            let gone = crate::reminders::remove(app, args["id"].as_str().unwrap_or(""));
+            let _ = app.emit("reminders-changed", ());
+            json!({ "ok": gone })
+        }
+        _ => json!({ "error": "no such tool" }),
+    }
+}
+
+/// One answer from Gemini to the conversation so far, after any reminders it set along the way.
+/// Tries the next model when one is busy.
 #[tauri::command]
 pub async fn chat_send(app: AppHandle, name: String, messages: Vec<Message>) -> Result<String, String> {
     let key = key().ok_or("nokey")?;
-    let mut body_messages = vec![json!({ "role": "system", "content": system_prompt(&name) })];
+    let mut history = vec![json!({ "role": "system", "content": system_prompt(&name) })];
     // The last twenty turns are plenty for a chat bubble and keep each call small.
     let start = messages.len().saturating_sub(20);
     for m in &messages[start..] {
         let role = if m.role == "buddy" { "assistant" } else { "user" };
-        body_messages.push(json!({ "role": role, "content": m.text }));
+        history.push(json!({ "role": role, "content": m.text }));
     }
     let client = reqwest::Client::builder().timeout(Duration::from_secs(40)).build().map_err(|e| e.to_string())?;
     let _ = app.emit_to("pet", "pet-react", "think");
+
+    let mut models = MODELS.iter().peekable();
     let mut last_err = String::new();
-    for model in MODELS {
+    // A few rounds: the model may set a reminder, read the result, then answer.
+    let mut rounds = 0;
+    while let Some(model) = models.peek() {
+        if rounds >= 4 {
+            break;
+        }
         let res = client
             .post(GEMINI_URL)
             .bearer_auth(&key)
-            .json(&json!({ "model": model, "messages": body_messages, "reasoning_effort": "low" }))
+            .json(&json!({ "model": model, "messages": history, "tools": tools(), "reasoning_effort": "low" }))
             .send()
             .await;
-        match res {
-            Ok(r) if r.status().is_success() => {
-                let v: Value = r.json().await.map_err(|e| e.to_string())?;
-                let text = v["choices"][0]["message"]["content"].as_str().unwrap_or("").trim().to_string();
-                if !text.is_empty() {
-                    let _ = app.emit_to("pet", "pet-react", "talk");
-                    return Ok(text);
-                }
-                last_err = format!("{model}: prázdná odpověď");
+        let r = match res {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("{model}: {e}");
+                models.next();
+                continue;
             }
-            Ok(r) => {
-                let status = r.status().as_u16();
-                let detail = r.text().await.unwrap_or_default();
-                // A wrong key will not get better with another model.
-                if (status == 400 && detail.to_lowercase().contains("key")) || status == 401 || status == 403 {
-                    let _ = app.emit_to("pet", "pet-react", "confused");
-                    return Err("badkey".into());
-                }
-                last_err = format!("{model}: HTTP {status}");
+        };
+        if !r.status().is_success() {
+            let status = r.status().as_u16();
+            let detail = r.text().await.unwrap_or_default();
+            // A wrong key will not get better with another model.
+            if (status == 400 && detail.to_lowercase().contains("key")) || status == 401 || status == 403 {
+                let _ = app.emit_to("pet", "pet-react", "confused");
+                return Err("badkey".into());
             }
-            Err(e) => last_err = format!("{model}: {e}"),
+            last_err = format!("{model}: HTTP {status}");
+            models.next();
+            continue;
         }
+        let v: Value = r.json().await.map_err(|e| e.to_string())?;
+        let message = v["choices"][0]["message"].clone();
+        let calls = message["tool_calls"].as_array().cloned().unwrap_or_default();
+        if calls.is_empty() {
+            let text = message["content"].as_str().unwrap_or("").trim().to_string();
+            if text.is_empty() {
+                last_err = format!("{model}: prázdná odpověď");
+                models.next();
+                continue;
+            }
+            let _ = app.emit_to("pet", "pet-react", "talk");
+            return Ok(text);
+        }
+        // Kept whole, extra fields included: Gemini 3 wants its thought signatures back.
+        history.push(json!({ "role": "assistant", "content": message["content"], "tool_calls": calls }));
+        for call in &calls {
+            let name = call["function"]["name"].as_str().unwrap_or("");
+            let args: Value = match &call["function"]["arguments"] {
+                Value::String(s) => serde_json::from_str(s).unwrap_or(Value::Null),
+                other => other.clone(),
+            };
+            let result = run_tool(&app, name, &args);
+            history.push(json!({ "role": "tool", "tool_call_id": call["id"], "content": result.to_string() }));
+        }
+        rounds += 1;
     }
     let _ = app.emit_to("pet", "pet-react", "confused");
     Err(last_err)
@@ -124,11 +225,23 @@ pub async fn chat_send(app: AppHandle, name: String, messages: Vec<Message>) -> 
 
 /// Opens the bubble above the buddy (or brings it back), and tells the body to stand still.
 pub fn open(app: &AppHandle) {
+    show(app, true);
+}
+
+/// For a reminder: the bubble appears but leaves the keyboard where it is, so nobody's typing
+/// lands in it by surprise.
+pub fn open_quietly(app: &AppHandle) {
+    show(app, false);
+}
+
+fn show(app: &AppHandle, focus: bool) {
     crate::pet::set_talking(true);
     if let Some(w) = app.get_webview_window("chat") {
         let _ = w.show();
-        let _ = w.set_focus();
-        let _ = app.emit_to("chat", "chat-shown", ());
+        if focus {
+            let _ = w.set_focus();
+        }
+        let _ = app.emit_to("chat", "chat-shown", focus);
         return;
     }
     let made = WebviewWindowBuilder::new(app, "chat", WebviewUrl::App("index.html?view=chat".into()))
@@ -142,8 +255,9 @@ pub fn open(app: &AppHandle) {
         .resizable(false)
         .visible_on_all_workspaces(true)
         .position(-2000.0, -2000.0)
+        .focused(focus)
         .build();
-    if let Ok(w) = made {
+    if let (Ok(w), true) = (made, focus) {
         let _ = w.set_focus();
     }
 }

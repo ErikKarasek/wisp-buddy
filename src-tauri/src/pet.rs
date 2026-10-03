@@ -73,6 +73,9 @@ struct Pet {
     /// the chat instead), and when the last quick click was.
     hop_at: Option<Instant>,
     last_click: Option<Instant>,
+    /// Where the mouse was and when it last moved: someone is at the Mac.
+    cursor: (f64, f64),
+    cursor_moved: Instant,
     sent: Option<(Mode, f64)>,
 }
 
@@ -236,6 +239,13 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, dt: f64) {
         }
         p.x = p.x.clamp(min_x - SIZE * 0.3, max_x + SIZE * 0.3);
 
+        if let Some(c) = cursor {
+            if (c.x - p.cursor.0).abs() + (c.y - p.cursor.1).abs() > 2.0 {
+                p.cursor = (c.x, c.y);
+                p.cursor_moved = now;
+            }
+        }
+
         // Clicks go through the window except on the body itself, a circle round its middle.
         if let Some(c) = cursor {
             let (cx, cy) = (c.x / a.scale - p.x, c.y / a.scale - p.y);
@@ -296,6 +306,8 @@ pub fn start(app: AppHandle) {
             talking: false,
             hop_at: None,
             last_click: None,
+            cursor: (0.0, 0.0),
+            cursor_moved: Instant::now(),
             sent: None,
         });
         let _ = win.show();
@@ -423,4 +435,21 @@ pub fn toggle_sleep() -> bool {
         p.sleep_by_hand
     })
     .unwrap_or(false)
+}
+
+/// A reminder is due: wake up, whatever the hour, and stay up a while.
+pub fn wake_for_reminder() {
+    with(|p| {
+        p.sleep_by_hand = false;
+        p.awake_until = Some(Instant::now() + Duration::from_secs(5 * 60));
+        if p.mode == Mode::Sleep {
+            p.mode = Mode::Idle;
+            p.until = Instant::now() + Duration::from_secs(3);
+        }
+    });
+}
+
+/// Whether someone is at the Mac: the mouse moved in the last three minutes.
+pub fn someone_here() -> bool {
+    with(|p| p.cursor_moved.elapsed() < Duration::from_secs(180)).unwrap_or(false)
 }

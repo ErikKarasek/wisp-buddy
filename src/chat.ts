@@ -6,7 +6,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { loadConfig, worn } from "./config";
 
-type Message = { role: "me" | "buddy"; text: string };
+/** A reminder that fired shows its buttons until one is pressed. */
+type Message = { role: "me" | "buddy"; text: string; reminder?: string; answered?: boolean };
+type Reminder = { id: string; at: number; text: string; repeat: string | null; when: string };
+type Fired = { text: string; late: number; bedtime: boolean };
 
 const AI_STUDIO = "https://aistudio.google.com/apikey";
 
@@ -14,7 +17,8 @@ export async function startChat() {
   document.body.className = "chat";
   document.body.innerHTML = `
     <div class="bubble">
-      <header><b class="who"></b><button class="x" title="Zavřít (Esc)">✕</button></header>
+      <header><b class="who"></b><button class="clock" title="Připomínky" hidden></button><button class="x" title="Zavřít (Esc)">✕</button></header>
+      <div class="list" hidden></div>
       <div class="log"></div>
       <form class="say"><input type="text" placeholder="Napiš mu…" spellcheck="false" autocomplete="off"><button>➤</button></form>
       <form class="key" hidden>
@@ -38,11 +42,59 @@ export async function startChat() {
   const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
   const render = (thinking = false) => {
     log.innerHTML =
-      (messages.length ? "" : `<p class="hint">Ahoj, já jsem ${esc(name)}. Co je nového?</p>`) +
-      messages.map((m) => `<p class="${m.role}">${esc(m.text)}</p>`).join("") +
+      (messages.length ? "" : `<p class="hint">Ahoj, já jsem ${esc(name)}. Co je nového? Klidně mi řekni, ať ti něco připomenu.</p>`) +
+      messages
+        .map((m, i) => {
+          const buttons =
+            m.reminder !== undefined && !m.answered
+              ? `<span class="acts"><button data-done="${i}">Hotovo</button><button data-snooze="${i}" data-min="10">Za 10 min</button><button data-snooze="${i}" data-min="60">Za hodinu</button></span>`
+              : "";
+          return `<p class="${m.role}${m.reminder !== undefined ? " remind" : ""}">${esc(m.text)}${buttons}</p>`;
+        })
+        .join("") +
       (thinking ? `<p class="buddy dots"><i></i><i></i><i></i></p>` : "");
     log.scrollTop = log.scrollHeight;
   };
+
+  // ----- reminders: the clock in the header, and the ones that fire -----
+  const clock = $<HTMLButtonElement>(".clock");
+  const list = $(".list");
+  const loadReminders = async () => {
+    const all = await invoke<Reminder[]>("reminder_list").catch(() => []);
+    clock.hidden = all.length === 0;
+    clock.textContent = `⏰ ${all.length}`;
+    list.innerHTML = all
+      .map((r) => `<div class="item"><span><b>${esc(r.when)}</b>${r.repeat ? ` <small>${r.repeat === "daily" ? "každý den" : "všední dny"}</small>` : ""}<br>${esc(r.text)}</span><button data-cancel="${esc(r.id)}" title="Zrušit">✕</button></div>`)
+      .join("");
+    if (all.length === 0) list.hidden = true;
+  };
+  clock.addEventListener("click", () => {
+    list.hidden = !list.hidden;
+  });
+  list.addEventListener("click", async (e) => {
+    const id = (e.target as HTMLElement).closest<HTMLElement>("[data-cancel]")?.dataset.cancel;
+    if (!id) return;
+    await invoke("reminder_remove", { id });
+    await loadReminders();
+  });
+  log.addEventListener("click", async (e) => {
+    const t = e.target as HTMLElement;
+    const done = t.dataset.done;
+    const snooze = t.dataset.snooze;
+    const i = Number(done ?? snooze);
+    const m = messages[i];
+    if (!m || m.reminder === undefined) return;
+    m.answered = true;
+    if (snooze !== undefined) {
+      const minutes = Number(t.dataset.min);
+      await invoke("reminder_snooze", { text: m.reminder, minutes });
+      messages.push({ role: "buddy", text: minutes >= 60 ? "Dobře, ozvu se za hodinu." : `Dobře, ozvu se za ${minutes} minut.` });
+      await loadReminders();
+    } else {
+      messages.push({ role: "buddy", text: Math.random() < 0.5 ? "Super, odškrtnuto." : "Hotovo, výborně." });
+    }
+    render();
+  });
 
   const showKeyForm = (error = "") => {
     keyForm.hidden = false;
@@ -51,7 +103,7 @@ export async function startChat() {
     keyInput.focus();
   };
 
-  const refresh = async () => {
+  const refresh = async (focus = true) => {
     name = worn(await loadConfig())?.name ?? "Buddy";
     $(".who").textContent = name;
     render();
@@ -59,8 +111,9 @@ export async function startChat() {
     else {
       keyForm.hidden = true;
       say.hidden = false;
-      input.focus();
+      if (focus) input.focus();
     }
+    await loadReminders();
   };
 
   say.addEventListener("submit", async (e) => {
@@ -115,8 +168,16 @@ export async function startChat() {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") close();
   });
-  void listen("chat-shown", () => void refresh());
-  void listen("config-changed", () => void refresh());
+  void listen<boolean>("chat-shown", (e) => void refresh(e.payload !== false));
+  void listen("config-changed", () => void refresh(false));
+  void listen("reminders-changed", () => void loadReminders());
+  void listen<Fired>("reminder", (e) => {
+    const { text, late, bedtime } = e.payload;
+    const lateNote = late >= 2 ? ` (měl jsem se ozvat před ${late} min, Mac spal)` : "";
+    messages.push(bedtime ? { role: "buddy", text } : { role: "buddy", text: `⏰ ${text}${lateNote}`, reminder: text });
+    render();
+    void loadReminders();
+  });
 
   await refresh();
 }
