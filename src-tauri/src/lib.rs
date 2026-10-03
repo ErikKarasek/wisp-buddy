@@ -6,6 +6,7 @@ mod config;
 mod pet;
 mod reminders;
 mod windows;
+mod wisp;
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
@@ -48,6 +49,9 @@ fn tray(app: &App) -> tauri::Result<()> {
     let climbing = config::field(app.handle(), "climb").and_then(|v| v.as_bool()).unwrap_or(true);
     pet::set_climb(climbing);
     let climb = CheckMenuItem::with_id(app, "climb", "Leze po oknech", true, climbing, None::<&str>)?;
+    let linked = config::field(app.handle(), "wisp").and_then(|v| v.as_bool()).unwrap_or(true);
+    wisp::set_on(linked);
+    let wisp_link = CheckMenuItem::with_id(app, "wisp", "Propojit s Wispem", true, linked, None::<&str>)?;
     // When to be sent to bed, if at all.
     let bed_now = reminders::bedtime_setting(app.handle());
     let beds: Vec<CheckMenuItem<tauri::Wry>> = [("23:00", "Ve 23:00"), ("00:00", "O půlnoci"), ("01:00", "V 1:00"), ("off", "Vůbec")]
@@ -60,11 +64,12 @@ fn tray(app: &App) -> tauri::Result<()> {
     let bed_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = beds.iter().map(|b| b as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
     let bedtime = Submenu::with_items(app, "Poslat mě spát", true, &bed_refs)?;
     let quit = MenuItem::with_id(app, "quit", "Ukončit Wisp Buddy", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&summon, &talk, &studio, &sleep, &motion, &climb, &bedtime, &PredefinedMenuItem::separator(app)?, &quit])?;
+    let menu = Menu::with_items(app, &[&summon, &talk, &studio, &sleep, &motion, &climb, &wisp_link, &bedtime, &PredefinedMenuItem::separator(app)?, &quit])?;
 
     let sleep_item = sleep.clone();
     let motion_item = motion.clone();
     let climb_item = climb.clone();
+    let wisp_item = wisp_link.clone();
     TrayIconBuilder::with_id("buddy")
         .icon(app.default_window_icon().cloned().expect("an app icon"))
         .icon_as_template(false)
@@ -81,6 +86,11 @@ fn tray(app: &App) -> tauri::Result<()> {
             "motion" => {
                 let on = motion_item.is_checked().unwrap_or(true);
                 config::set_field(app, "shapeMotion", serde_json::Value::Bool(on));
+            }
+            "wisp" => {
+                let on = wisp_item.is_checked().unwrap_or(true);
+                wisp::set_on(on);
+                config::set_field(app, "wisp", serde_json::Value::Bool(on));
             }
             "climb" => {
                 let on = climb_item.is_checked().unwrap_or(true);
@@ -115,6 +125,7 @@ pub fn run() {
             tray(app)?;
             pet::start(app.handle().clone());
             reminders::start(app.handle().clone());
+            wisp::start(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

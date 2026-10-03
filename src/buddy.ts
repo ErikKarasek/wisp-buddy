@@ -10,7 +10,7 @@ import { mountMascot } from "./mascot/svg";
 
 type Mode = "idle" | "walk" | "sit" | "sleep" | "fall" | "held";
 type PetState = { mode: Mode; facing: number };
-type Reaction = "poke" | "land" | "dizzy" | "wake" | "think" | "talk" | "confused" | "remind" | "yawn" | "jump";
+type Reaction = "poke" | "land" | "dizzy" | "wake" | "think" | "talk" | "confused" | "remind" | "yawn" | "jump" | "celebrate" | "sad" | "curious";
 
 const BASE: Record<Mode, ExpressionName> = {
   idle: "happy",
@@ -25,12 +25,15 @@ export async function startBuddy() {
   const el = document.getElementById("buddy")!;
   const mascot = mountMascot(el, { expression: "happy", transition: 260 });
   let state: PetState = { mode: "idle", facing: 1 };
+  /** An agent in Wisp is working: the buddy looks keen too, now and then with a sparkle. */
+  let wispBusy = false;
   let reactingUntil = 0;
 
   /** The face for what the body is doing, turned the way it walks. */
   const face = () => {
     if (Date.now() < reactingUntil) return;
-    const ex: MascotExpression = EXPRESSIONS[BASE[state.mode]];
+    const busyFace = wispBusy && (state.mode === "idle" || state.mode === "walk");
+    const ex: MascotExpression = EXPRESSIONS[busyFace ? "thriving" : BASE[state.mode]];
     const walking = state.mode === "walk";
     mascot.setExpression({ ...ex, lookX: walking ? state.facing * 0.55 : ex.lookX, wander: walking ? 0.15 : ex.wander });
   };
@@ -53,6 +56,11 @@ export async function startBuddy() {
   void listen("config-changed", async () => {
     await dress();
     react("happy", 600);
+  });
+
+  void listen<boolean>("wisp-busy", (e) => {
+    wispBusy = e.payload;
+    face();
   });
 
   void listen<PetState>("pet", (e) => {
@@ -79,6 +87,12 @@ export async function startBuddy() {
       mascot.roll(600);
       react("surprised", 1500);
     } else if (e.payload === "yawn") react("tired", 2500);
+    // News from Wisp: an agent finished (a somersault), failed (sad) or waits for you (curious).
+    else if (e.payload === "celebrate") {
+      mascot.roll(800);
+      react("proud", 1600);
+    } else if (e.payload === "sad") react("sad", 3000);
+    else if (e.payload === "curious") react("curious", 3000);
     // Off on a jump, up onto a window or down from one.
     else if (e.payload === "jump") react("thriving", 700);
   });

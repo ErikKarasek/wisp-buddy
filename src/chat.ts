@@ -171,6 +171,11 @@ export async function startChat() {
   void listen<boolean>("chat-shown", (e) => void refresh(e.payload !== false));
   void listen("config-changed", () => void refresh(false));
   void listen("reminders-changed", () => void loadReminders());
+  // News from Wisp, in the buddy's own words.
+  void listen<string>("say", (e) => {
+    messages.push({ role: "buddy", text: e.payload });
+    render();
+  });
   void listen<Fired>("reminder", (e) => {
     const { text, late, bedtime } = e.payload;
     const lateNote = late >= 2 ? ` (měl jsem se ozvat před ${late} min, Mac spal)` : "";

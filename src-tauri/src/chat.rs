@@ -71,9 +71,10 @@ Buď milý a trochu hravý, ale ne přeslazený. Žádné odrážky ani nadpisy,
 Když nevíš, řekni to. Nevymýšlej si, co nevidíš: nevidíš obrazovku, soubory ani co člověk dělá.\n\
 Umíš si pamatovat připomínky: když o ni člověk požádá, nastav ji nástrojem set_reminder a pak krátce \
 potvrď, kdy se ozveš. Čas počítej od teď. Když neřekne přesný čas (\"odpoledne\", \"večer\"), zeptej se.\n\
-Teď je {} ({}).",
+Teď je {} ({}).{}",
         now_text(),
-        crate::reminders::now_iso()
+        crate::reminders::now_iso(),
+        crate::wisp::summary_for_chat().map(|w| format!("\n{w} Když se zeptá na agenty, odpověz z tohohle.")).unwrap_or_default()
     )
 }
 
@@ -221,6 +222,20 @@ pub async fn chat_send(app: AppHandle, name: String, messages: Vec<Message>) -> 
     }
     let _ = app.emit_to("pet", "pet-react", "confused");
     Err(last_err)
+}
+
+/// The buddy says something of its own (news from Wisp): a reaction, and the line in the bubble,
+/// shown without taking the keyboard.
+pub fn say(app: &AppHandle, text: &str, reaction: &str) {
+    crate::pet::wake_for_reminder();
+    let _ = app.emit_to("pet", "pet-react", reaction);
+    open_quietly(app);
+    let (app, text) = (app.clone(), text.to_string());
+    std::thread::spawn(move || {
+        // The bubble may have just been made: give its page a moment to listen.
+        std::thread::sleep(Duration::from_millis(700));
+        let _ = app.emit_to("chat", "say", text);
+    });
 }
 
 /// Opens the bubble above the buddy (or brings it back), and tells the body to stand still.

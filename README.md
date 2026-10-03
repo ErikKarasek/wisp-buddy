@@ -13,6 +13,6 @@ corepack pnpm tauri:build
 
 The app lands in `src-tauri/target/release/bundle/macos/`. It is not signed or notarized, so the first launch has to be allowed in System Settings → Privacy & Security.
 
-## Where it is going
+## With Wisp
 
-- Showing your agents' state when Wisp runs on the same Mac
+When [Wisp](https://github.com/ErikKarasek/wisp) runs on the same Mac, the buddy asks it every few seconds (GET /buddy/state on Wisp's local server, with the key Wisp keeps for its hooks). It looks keen while an agent works, does a somersault when one finishes, and says in its bubble when one fails or waits for you. Ask it in the chat what the agents are doing. Tray → Propojit s Wispem turns it off.
