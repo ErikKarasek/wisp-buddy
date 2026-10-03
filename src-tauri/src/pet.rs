@@ -26,8 +26,8 @@ const WALK_SPEED: f64 = 42.0;
 const GRAVITY: f64 = 2600.0;
 /// A landing faster than this bounces, and makes it dizzy.
 const HARD_LANDING: f64 = 900.0;
-/// How high it can jump up onto a window, in points.
-const MAX_JUMP: f64 = 620.0;
+/// How high it can jump up onto a window, in points: any window on a laptop's screen.
+const MAX_JUMP: f64 = 1000.0;
 
 /// Whether it climbs onto windows (the tray's switch). Off, windows are just pictures to it.
 static CLIMB: AtomicBool = AtomicBool::new(true);
@@ -168,14 +168,17 @@ fn jump_chance() -> f64 {
     }
 }
 
-/// A jump in an arc onto the edge `l`, landing at `target` (its middle's x).
-fn jump_to(p: &mut Pet, l: &Ledge, target: f64) {
+/// A jump in an arc onto the edge `l`, landing at `target` (its middle's x). `top` is the
+/// screen's top (below the menu bar), which its head must not hit on the way.
+fn jump_to(p: &mut Pet, l: &Ledge, target: f64, top: f64) {
     let feet = p.y + size() * FEET;
     let cx = p.x + size() / 2.0;
     // Up to a little above the edge, then down onto it: the time decides the sideways speed.
-    let rise = (feet - l.y).max(0.0) + 36.0;
+    // Under the menu bar there may be little room above the edge, so less of a hop over it.
+    let over = (l.y - size() * (FEET - HEAD) - top - 2.0).clamp(2.0, 36.0);
+    let rise = (feet - l.y).max(0.0) + over;
     let vy = (2.0 * GRAVITY * rise).sqrt();
-    let t = vy / GRAVITY + (2.0 * 36.0 / GRAVITY).sqrt();
+    let t = vy / GRAVITY + (2.0 * over / GRAVITY).sqrt();
     p.mode = Mode::Fall;
     p.on = None;
     p.vy = -vy;
@@ -193,14 +196,14 @@ fn reachable(p: &Pet, l: &Ledge) -> bool {
 }
 
 /// Now and then, a jump up onto a window it can reach. Returns whether it jumped.
-fn jump_up(p: &mut Pet, ledges: &[Ledge]) -> bool {
+fn jump_up(p: &mut Pet, ledges: &[Ledge], top: f64) -> bool {
     let options: Vec<Ledge> = ledges.iter().filter(|l| reachable(p, l)).copied().collect();
     if options.is_empty() {
         return false;
     }
     let l = options[(rand() * options.len() as f64) as usize % options.len()];
     let target = l.x1 + 50.0 + rand() * (l.x2 - l.x1 - 100.0).max(0.0);
-    jump_to(p, &l, target);
+    jump_to(p, &l, target, top);
     true
 }
 
@@ -429,7 +432,7 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
                                 .find(|l| Some(l.id) != p.on && (my - l.y).abs() < 28.0 && mx > l.x1 + 20.0 && mx < l.x2 - 20.0 && reachable(p, l))
                                 .copied();
                             if let Some(l) = hovered {
-                                jump_to(p, &l, mx);
+                                jump_to(p, &l, mx, a.top);
                                 react = Some("jump");
                             }
                         }
@@ -447,10 +450,11 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
                             }
                         }
                     }
-                    if now >= p.until {
+                    // Already off on a jump to the mouse: no new plan on top of it.
+                    if now >= p.until && p.mode != Mode::Fall {
                         // Sometimes up onto a window instead of another stroll, but not when the
                         // mouse just woke it: that is for walking over to the mouse.
-                        if CLIMB.load(Ordering::Relaxed) && !still() && !woke_early && rand() < jump_chance() && jump_up(p, ledges) {
+                        if CLIMB.load(Ordering::Relaxed) && !still() && !woke_early && rand() < jump_chance() && jump_up(p, ledges, a.top) {
                             react = Some("jump");
                         } else {
                             let c = cursor.map(|c| (c.x / a.scale, c.y / a.scale));
