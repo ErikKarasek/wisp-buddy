@@ -182,9 +182,21 @@ fn jump_up(p: &mut Pet, ledges: &[Ledge]) -> bool {
     true
 }
 
+/// WISP_BUDDY_STILL=1, for recording a video by hand: it does nothing on its own (no walks, no
+/// jumps), so the mouse finds it where it was a moment ago. Thrown, poked or carried, it still reacts.
+fn still() -> bool {
+    static STILL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *STILL.get_or_init(|| std::env::var("WISP_BUDDY_STILL").is_ok_and(|v| v == "1"))
+}
+
 /// Pick the next calm thing to do: walk somewhere, stand, or sit for a while.
 fn next_activity(p: &mut Pet, a: &Area) {
     let now = Instant::now();
+    if still() {
+        p.mode = Mode::Idle;
+        p.until = now + Duration::from_secs(3600);
+        return;
+    }
     let r = rand();
     if r < 0.45 {
         p.mode = Mode::Walk;
@@ -340,7 +352,7 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
                 } else if p.mode != Mode::Sleep {
                     if now >= p.until {
                         // Sometimes up onto a window instead of another stroll.
-                        if CLIMB.load(Ordering::Relaxed) && rand() < jump_chance() && jump_up(p, ledges) {
+                        if CLIMB.load(Ordering::Relaxed) && !still() && rand() < jump_chance() && jump_up(p, ledges) {
                             react = Some("jump");
                         } else {
                             next_activity(p, a);
