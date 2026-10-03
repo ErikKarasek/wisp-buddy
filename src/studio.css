@@ -237,10 +237,18 @@ body.studio {
   font-size: 12px;
   color: var(--muted);
 }
+/* Stuck to the bottom of the window, so saving is always in reach without scrolling. */
 .btns {
+  position: sticky;
+  bottom: -18px;
+  z-index: 1;
   display: flex;
   gap: 8px;
   align-items: center;
+  margin: 0 -4px -18px;
+  padding: 12px 4px 18px;
+  background: var(--bg);
+  border-top: 1px solid var(--line);
 }
 .btns .spacer {
   flex: 1;

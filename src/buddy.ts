@@ -121,9 +121,14 @@ export async function startBuddy() {
 
   // The mouse: press to pick it up, release to let go (a short click is a poke, Rust decides).
   el.addEventListener("mousedown", (e) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || e.ctrlKey) return;
     e.preventDefault();
     void invoke("grab");
+  });
+  // Right-click (or Ctrl-click): the same menu as the tray icon, which a full menu bar may hide.
+  el.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    void invoke("pet_menu");
   });
   window.addEventListener("mouseup", (e) => {
     if (e.button !== 0) return;
