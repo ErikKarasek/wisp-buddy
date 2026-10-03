@@ -12,8 +12,15 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
 
-/// The window is square; the character stands with its feet at 92 % of its height.
-const SIZE: f64 = 140.0;
+/// The window is square; the character stands with its feet at 92 % of its height. How big
+/// is the tray's choice (small, medium, large), in points.
+static SIZE_PT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(140);
+fn size() -> f64 {
+    SIZE_PT.load(Ordering::Relaxed) as f64
+}
+/// The body's top, as a share of the window from its top: what must stay on the screen. The
+/// window above it is empty and may go up under the menu bar.
+const HEAD: f64 = 0.12;
 const FEET: f64 = 0.92;
 const WALK_SPEED: f64 = 42.0;
 const GRAVITY: f64 = 2600.0;
@@ -100,6 +107,8 @@ struct Pet {
     ledge_x1: f64,
     /// Where its eyes were last told to look (towards the mouse), to send only changes.
     look_sent: Option<(f64, f64)>,
+    /// When it last jumped up somewhere, so a hovering mouse does not make it hop non-stop.
+    jumped_at: Instant,
     sent: Option<(Mode, f64)>,
 }
 
@@ -139,7 +148,7 @@ fn area_of(win: &WebviewWindow) -> Option<Area> {
 
 /// The window's top when the feet stand on the floor (the Dock's edge or the screen's bottom).
 fn floor(a: &Area) -> f64 {
-    a.bottom - SIZE * FEET
+    a.bottom - size() * FEET
 }
 
 /// Recording a video (WISP_BUDDY_DEMO=1): jumps more, and starts on the floor a third of the
@@ -159,28 +168,39 @@ fn jump_chance() -> f64 {
     }
 }
 
-/// Now and then, a jump up onto a window it can reach. Returns whether it jumped.
-fn jump_up(p: &mut Pet, ledges: &[Ledge]) -> bool {
-    let feet = p.y + SIZE * FEET;
-    let cx = p.x + SIZE / 2.0;
-    let reachable: Vec<&Ledge> = ledges
-        .iter()
-        .filter(|l| l.x2 - l.x1 >= 180.0 && feet - l.y > 60.0 && feet - l.y < MAX_JUMP && ((l.x1 + l.x2) / 2.0 - cx).abs() < 700.0)
-        .collect();
-    if reachable.is_empty() {
-        return false;
-    }
-    let l = reachable[(rand() * reachable.len() as f64) as usize % reachable.len()];
+/// A jump in an arc onto the edge `l`, landing at `target` (its middle's x).
+fn jump_to(p: &mut Pet, l: &Ledge, target: f64) {
+    let feet = p.y + size() * FEET;
+    let cx = p.x + size() / 2.0;
     // Up to a little above the edge, then down onto it: the time decides the sideways speed.
-    let rise = feet - l.y + 36.0;
+    let rise = (feet - l.y).max(0.0) + 36.0;
     let vy = (2.0 * GRAVITY * rise).sqrt();
     let t = vy / GRAVITY + (2.0 * 36.0 / GRAVITY).sqrt();
-    let target = l.x1 + 50.0 + rand() * (l.x2 - l.x1 - 100.0);
     p.mode = Mode::Fall;
     p.on = None;
     p.vy = -vy;
-    p.vx = (target - cx) / t;
+    p.vx = (target.clamp(l.x1 + 30.0, l.x2 - 30.0) - cx) / t;
     p.facing = if p.vx < 0.0 { -1.0 } else { 1.0 };
+    p.jumped_at = Instant::now();
+}
+
+/// Whether it can jump from where it stands up onto `l`: high enough to bother, low enough to
+/// reach, near enough sideways, and wide enough to land on.
+fn reachable(p: &Pet, l: &Ledge) -> bool {
+    let feet = p.y + size() * FEET;
+    let cx = p.x + size() / 2.0;
+    l.x2 - l.x1 >= 120.0 && feet - l.y > 60.0 && feet - l.y < MAX_JUMP && ((l.x1 + l.x2) / 2.0 - cx).abs() < 700.0
+}
+
+/// Now and then, a jump up onto a window it can reach. Returns whether it jumped.
+fn jump_up(p: &mut Pet, ledges: &[Ledge]) -> bool {
+    let options: Vec<Ledge> = ledges.iter().filter(|l| reachable(p, l)).copied().collect();
+    if options.is_empty() {
+        return false;
+    }
+    let l = options[(rand() * options.len() as f64) as usize % options.len()];
+    let target = l.x1 + 50.0 + rand() * (l.x2 - l.x1 - 100.0).max(0.0);
+    jump_to(p, &l, target);
     true
 }
 
@@ -200,14 +220,22 @@ fn next_activity(p: &mut Pet, a: &Area, cursor: Option<(f64, f64)>) -> Option<&'
         p.until = now + Duration::from_secs(3600);
         return None;
     }
-    let cx = p.x + SIZE / 2.0;
-    let feet = p.y + SIZE * FEET;
+    let cx = p.x + size() / 2.0;
+    let feet = p.y + size() * FEET;
     // You are around: the mouse moved in the last few seconds, low on the screen, near enough
     // to bother about. Then it comes over, or sits down next to a mouse that has stopped.
     if let Some((mx, my)) = cursor {
         let lively = p.cursor_moved.elapsed() < Duration::from_secs(4);
         let near_floor = my > feet - 320.0 && my < feet + 40.0;
         let dx = mx - cx;
+        // Working higher up in a window: it still keeps you company, walking along underneath,
+        // just less eagerly than when the mouse is down beside it.
+        if lively && !near_floor && my < feet && dx.abs() > 140.0 && rand() < 0.35 {
+            p.mode = Mode::Walk;
+            p.facing = dx.signum();
+            p.until = now + Duration::from_secs_f64((dx.abs() - 100.0) / WALK_SPEED);
+            return None;
+        }
         if near_floor && dx.abs() < 600.0 {
             if lively && dx.abs() > 110.0 && rand() < 0.6 {
                 p.mode = Mode::Walk;
@@ -240,7 +268,7 @@ fn next_activity(p: &mut Pet, a: &Area, cursor: Option<(f64, f64)>) -> Option<&'
         p.mode = Mode::Walk;
         // Head away from a nearby edge, otherwise either way.
         let room_left = p.x - a.left;
-        let room_right = a.right - SIZE - p.x;
+        let room_right = a.right - size() - p.x;
         p.facing = if room_left < 120.0 { 1.0 } else if room_right < 120.0 { -1.0 } else if rand() < 0.5 { -1.0 } else { 1.0 };
         p.until = now + Duration::from_secs_f64(3.0 + rand() * 6.0);
     } else if r < 0.86 {
@@ -265,7 +293,7 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
         let now = Instant::now();
         let ground = floor(a);
         let min_x = a.left;
-        let max_x = a.right - SIZE;
+        let max_x = a.right - size();
 
         // A single click, once it is clear no second one follows: a little hop.
         if p.hop_at.is_some_and(|t| now >= t) {
@@ -278,9 +306,9 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
             }
         }
 
-        let cx = p.x + SIZE / 2.0;
+        let cx = p.x + size() / 2.0;
         // Where its feet would rest on each window edge, if it stands on one.
-        let stand_on = |l: &Ledge| l.y - SIZE * FEET;
+        let stand_on = |l: &Ledge| l.y - size() * FEET;
 
         match p.mode {
             Mode::Held => {
@@ -296,15 +324,15 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
                 }
             }
             Mode::Fall => {
-                let feet_before = p.y + SIZE * FEET;
+                let feet_before = p.y + size() * FEET;
                 p.vy += GRAVITY * dt;
                 p.x += p.vx * dt;
                 p.y += p.vy * dt;
                 // Coming down through a window's top edge: land on it, the highest one first.
                 let mut surface = ground;
                 if p.vy > 0.0 {
-                    let feet_after = p.y + SIZE * FEET;
-                    let cx = p.x + SIZE / 2.0;
+                    let feet_after = p.y + size() * FEET;
+                    let cx = p.x + size() / 2.0;
                     let hit = ledges
                         .iter()
                         .filter(|l| cx > l.x1 + 12.0 && cx < l.x2 - 12.0 && feet_before <= l.y + 1.0 && feet_after >= l.y && stand_on(l) < ground)
@@ -322,8 +350,10 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
                     p.x = p.x.clamp(min_x, max_x);
                     p.vx = -p.vx * 0.5;
                 }
-                if p.y < a.top {
-                    p.y = a.top;
+                // The ceiling is the menu bar for its head, not for the empty top of its window.
+                let ceiling = a.top - size() * HEAD;
+                if p.y < ceiling {
+                    p.y = ceiling;
                     p.vy = p.vy.abs() * 0.3;
                 }
                 if p.y >= surface {
@@ -390,13 +420,27 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
                     p.mode = Mode::Idle;
                     p.until = now + Duration::from_secs(2);
                 } else if p.mode != Mode::Sleep {
+                    // The mouse resting on a window's top edge it can reach: it jumps up there.
+                    if !still() && CLIMB.load(Ordering::Relaxed) && p.mode != Mode::Fall && p.jumped_at.elapsed() > Duration::from_secs(4) {
+                        if let Some(c) = cursor {
+                            let (mx, my) = (c.x / a.scale, c.y / a.scale);
+                            let hovered = ledges
+                                .iter()
+                                .find(|l| Some(l.id) != p.on && (my - l.y).abs() < 28.0 && mx > l.x1 + 20.0 && mx < l.x2 - 20.0 && reachable(p, l))
+                                .copied();
+                            if let Some(l) = hovered {
+                                jump_to(p, &l, mx);
+                                react = Some("jump");
+                            }
+                        }
+                    }
                     // A mouse moving nearby gets noticed now, not when the current rest ends.
                     let mut woke_early = false;
                     if !still() && (p.mode == Mode::Idle || p.mode == Mode::Sit) && p.cursor_moved.elapsed() < Duration::from_millis(400) {
                         if let Some(c) = cursor {
                             let (mx, my) = (c.x / a.scale, c.y / a.scale);
-                            let feet = p.y + SIZE * FEET;
-                            let dx = mx - (p.x + SIZE / 2.0);
+                            let feet = p.y + size() * FEET;
+                            let dx = mx - (p.x + size() / 2.0);
                             if my > feet - 320.0 && my < feet + 40.0 && dx.abs() > 110.0 && dx.abs() < 600.0 && p.until > now + Duration::from_millis(800) {
                                 p.until = now;
                                 woke_early = true;
@@ -423,7 +467,7 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
                         }
                         // At the end of a window's edge: mostly turn round, sometimes hop off.
                         if let Some(l) = edge {
-                            let cx = p.x + SIZE / 2.0;
+                            let cx = p.x + size() / 2.0;
                             if cx < l.x1 + 10.0 || cx > l.x2 - 10.0 {
                                 if rand() < 0.3 {
                                     p.mode = Mode::Fall;
@@ -432,7 +476,7 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
                                     p.vy = -260.0;
                                     react = Some("jump");
                                 } else {
-                                    p.x = (cx.clamp(l.x1 + 10.0, l.x2 - 10.0)) - SIZE / 2.0;
+                                    p.x = (cx.clamp(l.x1 + 10.0, l.x2 - 10.0)) - size() / 2.0;
                                     p.facing = -p.facing;
                                 }
                             }
@@ -441,7 +485,7 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
                 }
             }
         }
-        p.x = p.x.clamp(min_x - SIZE * 0.3, max_x + SIZE * 0.3);
+        p.x = p.x.clamp(min_x - size() * 0.3, max_x + size() * 0.3);
 
         if let Some(c) = cursor {
             if (c.x - p.cursor.0).abs() + (c.y - p.cursor.1).abs() > 2.0 {
@@ -453,7 +497,7 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
         // Clicks go through the window except on the body itself, a circle round its middle.
         if let Some(c) = cursor {
             let (cx, cy) = (c.x / a.scale - p.x, c.y / a.scale - p.y);
-            let (bx, by, r) = (SIZE * 0.5, SIZE * 0.6, SIZE * 0.36);
+            let (bx, by, r) = (size() * 0.5, size() * 0.6, size() * 0.36);
             let on_body = (cx - bx).powi(2) + (cy - by).powi(2) < r * r;
             let through = !on_body && p.mode != Mode::Held;
             if through != p.passthrough {
@@ -464,7 +508,7 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
 
         // Eyes on the mouse when it is about (moved lately, within reach); straight ahead otherwise.
         let look = cursor.and_then(|c| {
-            let (dx, dy) = (c.x / a.scale - (p.x + SIZE / 2.0), c.y / a.scale - (p.y + SIZE * 0.6));
+            let (dx, dy) = (c.x / a.scale - (p.x + size() / 2.0), c.y / a.scale - (p.y + size() * 0.6));
             let near = dx.abs() < 500.0 && dy.abs() < 400.0 && p.cursor_moved.elapsed() < Duration::from_secs(6);
             near.then(|| (((dx / 220.0).clamp(-1.0, 1.0) * 10.0).round() / 10.0, ((dy / 220.0).clamp(-1.0, 1.0) * 10.0).round() / 10.0))
         });
@@ -483,7 +527,7 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
 
     if let Some((x, y)) = moved_to {
         let _ = win.set_position(PhysicalPosition::new((x * a.scale).round() as i32, (y * a.scale).round() as i32));
-        crate::chat::follow(app, x, y, SIZE, (a.left, a.top, a.right, a.bottom, a.scale));
+        crate::chat::follow(app, x, y, size(), (a.left, a.top, a.right, a.bottom, a.scale));
     }
     if let Some(through) = ignore {
         let _ = win.set_ignore_cursor_events(through);
@@ -503,12 +547,12 @@ pub fn start(app: AppHandle) {
     std::thread::spawn(move || {
         let Some(win) = app.get_webview_window("pet") else { return };
         // The config's size comes out a little smaller on some screens; the body maths needs it exact.
-        let _ = win.set_size(tauri::LogicalSize::new(SIZE, SIZE));
+        let _ = win.set_size(tauri::LogicalSize::new(size(), size()));
         let Some(mut area) = area_of(&win) else { return };
         // Drop in from above the middle of the screen (a third of the way across for a video).
         let start = if demo() { area.left + (area.right - area.left) / 3.0 } else { (area.left + area.right) / 2.0 };
         *PET.lock().unwrap() = Some(Pet {
-            x: start - SIZE / 2.0,
+            x: start - size() / 2.0,
             y: area.top,
             vx: 0.0,
             vy: 0.0,
@@ -530,6 +574,7 @@ pub fn start(app: AppHandle) {
             on: None,
             ledge_x1: 0.0,
             look_sent: None,
+            jumped_at: Instant::now(),
             sent: None,
         });
         let _ = win.show();
@@ -556,7 +601,7 @@ pub fn start(app: AppHandle) {
                 ledges = if CLIMB.load(Ordering::Relaxed) {
                     crate::windows::ledges()
                         .into_iter()
-                        .filter(|l| l.y - SIZE * FEET >= area.top && l.y < area.bottom - 40.0 && l.x2 > area.left && l.x1 < area.right)
+                        .filter(|l| l.y - size() * (FEET - HEAD) >= area.top && l.y < area.bottom - 40.0 && l.x2 > area.left && l.x1 < area.right)
                         .collect()
                 } else {
                     vec![]
@@ -651,7 +696,7 @@ pub fn summon(app: &AppHandle) {
     let scale = m.scale_factor();
     let wa = m.work_area();
     with(|p| {
-        p.x = c.x / scale - SIZE / 2.0;
+        p.x = c.x / scale - size() / 2.0;
         p.y = wa.position.y as f64 / scale;
         p.vx = 0.0;
         p.vy = 0.0;
@@ -659,7 +704,28 @@ pub fn summon(app: &AppHandle) {
         p.awake_until = Some(Instant::now() + Duration::from_secs(120));
         p.sleep_by_hand = false;
     });
-    let _ = win.set_position(PhysicalPosition::new((c.x - SIZE / 2.0 * scale) as i32, wa.position.y));
+    let _ = win.set_position(PhysicalPosition::new((c.x - size() / 2.0 * scale) as i32, wa.position.y));
+}
+
+/// From the tray: small, medium or large. The window resizes around its feet, so it stays
+/// standing where it stood.
+pub fn set_size(app: &AppHandle, pts: u32) {
+    let pts = pts.clamp(80, 240);
+    let old = size();
+    SIZE_PT.store(pts, Ordering::Relaxed);
+    let new = size();
+    with(|p| {
+        p.x += (old - new) / 2.0;
+        p.y += (old - new) * FEET;
+    });
+    if let Some(win) = app.get_webview_window("pet") {
+        let _ = win.set_size(tauri::LogicalSize::new(new, new));
+    }
+}
+
+/// The size to start with, before the window shows (from the config).
+pub fn init_size(pts: u32) {
+    SIZE_PT.store(pts.clamp(80, 240), Ordering::Relaxed);
 }
 
 /// From the tray: sleep now, or wake up.

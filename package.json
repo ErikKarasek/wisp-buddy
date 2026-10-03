@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
+    "tauri:build": "node scripts/build.mjs",
     "icon": "node scripts/make-icon.mjs && tauri icon src-tauri/icons/source.png"
   },
   "dependencies": {
