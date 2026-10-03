@@ -391,6 +391,7 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
                     p.until = now + Duration::from_secs(2);
                 } else if p.mode != Mode::Sleep {
                     // A mouse moving nearby gets noticed now, not when the current rest ends.
+                    let mut woke_early = false;
                     if !still() && (p.mode == Mode::Idle || p.mode == Mode::Sit) && p.cursor_moved.elapsed() < Duration::from_millis(400) {
                         if let Some(c) = cursor {
                             let (mx, my) = (c.x / a.scale, c.y / a.scale);
@@ -398,12 +399,14 @@ fn step(app: &AppHandle, win: &WebviewWindow, a: &Area, ledges: &[Ledge], dt: f6
                             let dx = mx - (p.x + SIZE / 2.0);
                             if my > feet - 320.0 && my < feet + 40.0 && dx.abs() > 110.0 && dx.abs() < 600.0 && p.until > now + Duration::from_millis(800) {
                                 p.until = now;
+                                woke_early = true;
                             }
                         }
                     }
                     if now >= p.until {
-                        // Sometimes up onto a window instead of another stroll.
-                        if CLIMB.load(Ordering::Relaxed) && !still() && rand() < jump_chance() && jump_up(p, ledges) {
+                        // Sometimes up onto a window instead of another stroll, but not when the
+                        // mouse just woke it: that is for walking over to the mouse.
+                        if CLIMB.load(Ordering::Relaxed) && !still() && !woke_early && rand() < jump_chance() && jump_up(p, ledges) {
                             react = Some("jump");
                         } else {
                             let c = cursor.map(|c| (c.x / a.scale, c.y / a.scale));
