@@ -195,8 +195,9 @@ fn bedtime(app: &AppHandle) -> Option<(i32, i32)> {
 
 pub fn start(app: AppHandle) {
     std::thread::spawn(move || {
-        // The night the nudge was given, as the date the evening started on.
-        let mut nudged: Option<(i32, i32, i32)> = None;
+        // The night the nudge was given, as the date the evening started on ("2026-10-03"). Kept
+        // in the config, so starting the app again later that night does not nudge twice.
+        let mut nudged: Option<String> = config::field(&app, "bedtimeNudged").and_then(|v| v.as_str().map(String::from));
         let mut last_check = Instant::now() - Duration::from_secs(60);
         loop {
             std::thread::sleep(Duration::from_secs(5));
@@ -239,10 +240,11 @@ pub fn start(app: AppHandle) {
                 continue;
             }
             let evening = if tm.tm_hour < 12 { local(now - 86_400_000) } else { tm };
-            let night = (evening.tm_year, evening.tm_mon, evening.tm_mday);
-            if nudged == Some(night) {
+            let night = format!("{}-{:02}-{:02}", evening.tm_year + 1900, evening.tm_mon + 1, evening.tm_mday);
+            if nudged.as_deref() == Some(night.as_str()) {
                 continue;
             }
+            config::set_field(&app, "bedtimeNudged", json!(night));
             nudged = Some(night);
             let line = BEDTIME_LINES[(now / 1000) as usize % BEDTIME_LINES.len()];
             let t = format!("{}:{:02}", tm.tm_hour, tm.tm_min);
