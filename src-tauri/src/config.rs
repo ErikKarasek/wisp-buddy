@@ -11,7 +11,8 @@ static WRITE: Mutex<()> = Mutex::new(());
 
 /// Fields Rust keeps (the tray and the reminder thread). A page saving its own part (the
 /// characters, what is worn) never overwrites these with the copy it loaded a moment ago.
-const RUST_OWNED: [&str; 8] = ["reminders", "bedtime", "bedtimeNudged", "climb", "wisp", "shapeMotion", "phone", "size"];
+const RUST_OWNED: [&str; 13] =
+    ["reminders", "bedtime", "bedtimeNudged", "climb", "wisp", "shapeMotion", "phone", "size", "memory", "voice", "home", "briefing", "briefingDone"];
 
 fn path(app: &AppHandle) -> Option<PathBuf> {
     Some(app.path().app_config_dir().ok()?.join("config.json"))

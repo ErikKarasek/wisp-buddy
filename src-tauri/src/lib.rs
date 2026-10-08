@@ -1,12 +1,19 @@
 //! Wisp Buddy: a character from Wisp's family that lives on the desktop. It walks along the
-//! bottom of the screen, can be picked up and thrown, and sleeps at night.
+//! bottom of the screen, can be picked up and thrown, and sleeps at night. And it is a personal
+//! assistant: it talks (out loud too), listens, remembers, reminds, gives the morning overview,
+//! hands coding work to Wisp's night shift, wakes the PC and works the TV.
 
+mod briefing;
 mod chat;
 mod config;
+mod home;
+mod memory;
 mod pet;
 mod reminders;
+mod voice;
 mod windows;
 mod wisp;
+mod work;
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
@@ -54,6 +61,12 @@ fn tray(app: &App) -> tauri::Result<()> {
     let wisp_link = CheckMenuItem::with_id(app, "wisp", "Propojit s Wispem", true, linked, None::<&str>)?;
     let to_phone = config::field(app.handle(), "phone").and_then(|v| v.as_bool()).unwrap_or(true);
     let phone = CheckMenuItem::with_id(app, "phone", "Připomínky i na telefon", true, to_phone, None::<&str>)?;
+    let aloud = config::field(app.handle(), "voice").and_then(|v| v.as_bool()).unwrap_or(true);
+    voice::set_aloud(aloud);
+    let voice_item = CheckMenuItem::with_id(app, "voice", "Mluví nahlas", true, aloud, None::<&str>)?;
+    let morning = briefing::enabled(app.handle());
+    let morning_item = CheckMenuItem::with_id(app, "briefing", "Ranní přehled", true, morning, None::<&str>)?;
+    let today = MenuItem::with_id(app, "today", "Co mě dneska čeká?", true, None::<&str>)?;
     // When to be sent to bed, if at all.
     let bed_now = reminders::bedtime_setting(app.handle());
     let beds: Vec<CheckMenuItem<tauri::Wry>> = [("23:00", "Ve 23:00"), ("00:00", "O půlnoci"), ("01:00", "V 1:00"), ("off", "Vůbec")]
@@ -75,13 +88,18 @@ fn tray(app: &App) -> tauri::Result<()> {
     let size_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = sizes.iter().map(|b| b as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
     let size_menu = Submenu::with_items(app, "Velikost", true, &size_refs)?;
     let quit = MenuItem::with_id(app, "quit", "Ukončit Wisp Buddy", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&summon, &talk, &studio, &size_menu, &sleep, &motion, &climb, &wisp_link, &phone, &bedtime, &PredefinedMenuItem::separator(app)?, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[&summon, &talk, &today, &studio, &size_menu, &sleep, &motion, &climb, &wisp_link, &phone, &voice_item, &morning_item, &bedtime, &PredefinedMenuItem::separator(app)?, &quit],
+    )?;
 
     let sleep_item = sleep.clone();
     let motion_item = motion.clone();
     let climb_item = climb.clone();
     let wisp_item = wisp_link.clone();
     let phone_item = phone.clone();
+    let aloud_item = voice_item.clone();
+    let briefing_item = morning_item.clone();
     TrayIconBuilder::with_id("buddy")
         .icon(app.default_window_icon().cloned().expect("an app icon"))
         .icon_as_template(false)
@@ -110,6 +128,19 @@ fn tray(app: &App) -> tauri::Result<()> {
         "phone" => {
             let on = phone_item.is_checked().unwrap_or(true);
             config::set_field(app, "phone", serde_json::Value::Bool(on));
+        }
+        "voice" => {
+            let on = aloud_item.is_checked().unwrap_or(true);
+            voice::set_aloud(on);
+            config::set_field(app, "voice", serde_json::Value::Bool(on));
+        }
+        "briefing" => {
+            let on = briefing_item.is_checked().unwrap_or(true);
+            config::set_field(app, "briefing", serde_json::Value::Bool(on));
+        }
+        "today" => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move { briefing::give(&app).await });
         }
         "climb" => {
             let on = climb_item.is_checked().unwrap_or(true);
@@ -153,7 +184,8 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![pet::grab, pet::release, config::config_load, config::config_save, config::wisp_characters,
             chat::chat_send, chat::chat_close, chat::gemini_key_set, chat::gemini_key_present, chat::gemini_key_forget, open_url,
-            reminders::reminder_list, reminders::reminder_remove, reminders::reminder_snooze, pet_menu])
+            reminders::reminder_list, reminders::reminder_remove, reminders::reminder_snooze, pet_menu, chat::chat_confirm,
+            memory::memory_list, memory::memory_remove, voice::listen_start, voice::listen_stop, voice::listen_cancel, voice::voice_hush])
         .setup(|app| {
             // A buddy, not an app to switch to: no Dock icon, no menu bar of its own.
             #[cfg(target_os = "macos")]
@@ -162,6 +194,8 @@ pub fn run() {
             pet::start(app.handle().clone());
             reminders::start(app.handle().clone());
             wisp::start(app.handle().clone());
+            work::start(app.handle().clone());
+            briefing::start(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())
