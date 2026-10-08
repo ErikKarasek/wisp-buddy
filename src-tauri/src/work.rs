@@ -8,7 +8,8 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::fs::{File, OpenOptions, TryLockError};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 fn home() -> PathBuf {
@@ -22,6 +23,35 @@ fn queue_file() -> PathBuf {
 
 fn wisp_installed() -> bool {
     queue_file().parent().is_some_and(|d| d.is_dir())
+}
+
+/// How long to wait for Wisp before writing anyway.
+const LOCK_WAIT: Duration = Duration::from_secs(1);
+
+/// The same lock Wisp takes in its night.rs: an flock on night.lock beside the queue, held
+/// across the read and the write, so the two processes take turns instead of overwriting each
+/// other. It has to be a file of its own, because the queue is replaced by a rename and a lock
+/// on the inode that was renamed away would guard nothing. Both sides have to keep the same
+/// name; this is the one place it is written down on this side.
+///
+/// Dropping the file unlocks it, and so does the process dying, so a crash cannot leave the
+/// queue locked. Reading alone needs no lock: a reader always sees one whole file.
+fn lock_in(dir: &PathBuf, wait: Duration) -> Option<File> {
+    let f = OpenOptions::new().create(true).read(true).write(true).open(dir.join("night.lock")).ok()?;
+    // A turn is a millisecond of reading and writing one small file. A whole second means Wisp
+    // is stuck, and then it is better to write the task than to lose it.
+    let until = Instant::now() + wait;
+    loop {
+        match f.try_lock() {
+            Ok(()) => return Some(f),
+            Err(TryLockError::WouldBlock) if Instant::now() < until => std::thread::sleep(Duration::from_millis(5)),
+            _ => return None,
+        }
+    }
+}
+
+fn queue_lock() -> Option<File> {
+    lock_in(&queue_file().parent()?.to_path_buf(), LOCK_WAIT)
 }
 
 fn now_ms() -> u64 {
@@ -76,18 +106,13 @@ pub fn add(project: &str, task: &str, now: bool) -> Result<String, String> {
         return Err("Wisp na tomhle Macu není, práci za mě dělá jeho noční směna.".into());
     }
     let t = task_entry(&format!("{:x}", now_ms()), project, task, now);
-    let id = t["id"].clone();
+    let id = t["id"].as_str().unwrap_or_default().to_string();
+    // Reading and writing as one step, so a status Wisp wrote meanwhile does not get rolled back.
+    let _across = queue_lock();
     let mut all = read();
-    all.push(t.clone());
+    all.push(t);
     write(&all)?;
-    // Wisp may have saved its own copy at the same moment: look again, and add it back once.
-    std::thread::sleep(Duration::from_millis(400));
-    let mut all = read();
-    if !all.iter().any(|t| t["id"] == id) {
-        all.push(t);
-        write(&all)?;
-    }
-    Ok(id.as_str().unwrap_or_default().to_string())
+    Ok(id)
 }
 
 /// A task exactly as Wisp's night.rs keeps it. Wisp reads the whole file as one list, so an entry
@@ -163,6 +188,19 @@ pub fn start(app: AppHandle) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_queue_lock_holds_wisp_off_until_it_is_dropped() {
+        let dir = std::env::temp_dir().join(format!("buddy-lock-{}", super::now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // The real wait is a second; a test has no patience for it.
+        let short = std::time::Duration::from_millis(50);
+        let held = super::lock_in(&dir, short).expect("the first writer takes it");
+        assert!(super::lock_in(&dir, short).is_none(), "nobody else writes while it is held");
+        drop(held);
+        assert!(super::lock_in(&dir, short).is_some(), "free again once the first writer is done");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn finds_a_project_by_a_loose_name() {
         let all: Vec<String> = ["wisp-buddy", "job-mail", "job-tracker", "dispecink"].iter().map(|s| s.to_string()).collect();
