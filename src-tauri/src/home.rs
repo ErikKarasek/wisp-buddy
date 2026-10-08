@@ -318,7 +318,8 @@ fn tv_socket(app: &AppHandle, ip: &str) -> Result<Socket, String> {
         Err(_) => {
             let plain = SocketAddr::new(addr.ip(), 8001);
             let t = TcpStream::connect_timeout(&plain, Duration::from_millis(1500)).map_err(|_| "Televize neodpovídá. Je zapnutá a na stejné síti?".to_string())?;
-            (t, format!("ws://{ip}:8001/api/v2/channels/samsung.remote.control?name={name}"))
+            // The token belongs here as much as on 8002, or an older TV asks on screen every time.
+            (t, format!("ws://{ip}:8001/api/v2/channels/samsung.remote.control?name={name}{token}"))
         }
     };
     // Long enough to walk to the TV and press Allow the first time.

@@ -408,8 +408,12 @@ pub async fn chat_send(app: AppHandle, name: String, messages: Vec<Message>) -> 
             crate::voice::speak(&text);
             return Ok(Reply { text, asks });
         }
-        // Kept whole, extra fields included: Gemini 3 wants its thought signatures back.
-        history.push(json!({ "role": "assistant", "content": message["content"], "tool_calls": calls }));
+        // Back whole, with every field it came with: Gemini 3 wants its own thought signatures
+        // returned, and they do not all sit on the tool calls. Rebuilding the message from
+        // content and tool_calls alone drops them, and the next round is then refused.
+        let mut echo = message.clone();
+        echo["role"] = json!("assistant");
+        history.push(echo);
         for call in &calls {
             let name = call["function"]["name"].as_str().unwrap_or("").to_string();
             let args: Value = match &call["function"]["arguments"] {
