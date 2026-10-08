@@ -10,7 +10,7 @@ import { mountMascot } from "./mascot/svg";
 
 type Mode = "idle" | "walk" | "sit" | "sleep" | "fall" | "held";
 type PetState = { mode: Mode; facing: number };
-type Reaction = "poke" | "land" | "dizzy" | "wake" | "think" | "talk" | "confused" | "remind" | "yawn" | "jump" | "celebrate" | "sad" | "curious" | "hop" | "spin" | "wiggle";
+type Reaction = "poke" | "land" | "dizzy" | "wake" | "think" | "talk" | "confused" | "remind" | "yawn" | "jump" | "celebrate" | "sad" | "curious" | "hop" | "spin" | "wiggle" | "listen";
 
 const BASE: Record<Mode, ExpressionName> = {
   idle: "happy",
@@ -89,6 +89,8 @@ export async function startBuddy() {
     else if (e.payload === "wake") react("surprised", 800);
     // Talking in the bubble: it thinks while Gemini answers, then perks up, or looks lost.
     else if (e.payload === "think") react("curious", 40_000);
+    // The microphone is on: all ears until it stops (at most as long as a recording runs).
+    else if (e.payload === "listen") react("surprised", 45_000);
     else if (e.payload === "talk") {
       mascot.roll(500);
       react("happy", 1200);

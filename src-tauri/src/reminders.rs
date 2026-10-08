@@ -102,7 +102,7 @@ fn change<R>(app: &AppHandle, f: impl FnOnce(&mut Vec<Reminder>) -> R) -> R {
     out.expect("update_field runs the change")
 }
 
-fn new_id() -> String {
+pub fn new_id() -> String {
     // The clock plus a counter: two reminders made in the same millisecond still differ.
     static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -157,6 +157,7 @@ fn fire(app: &AppHandle, fired: Fired) {
         let text = fired.text.clone();
         std::thread::spawn(move || crate::wisp::notify("⏰ Wisp Buddy", &text));
     }
+    crate::voice::speak_if_here(&fired.text);
     crate::pet::wake_for_reminder();
     let _ = app.emit_to("pet", "pet-react", if fired.bedtime { "yawn" } else { "remind" });
     crate::chat::open_quietly(app);

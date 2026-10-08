@@ -4,6 +4,19 @@ A little character from [Wisp](https://github.com/ErikKarasek/wisp)'s family tha
 
 Made with Tauri 2 (Rust + TypeScript). The body (walking, falling, being carried) is a small physics loop in Rust that moves a transparent window; the character is Wisp's mascot engine, drawn in SVG.
 
+## As an assistant
+
+It is not only company. In the chat (or through the 🎙 button in the bubble: click, speak, click again) it:
+
+- **remembers** what you tell it about yourself and your plans, and starts every conversation knowing it (🧠 in the bubble lists it, ✕ forgets);
+- **talks out loud** with the Mac's Czech voice (tray → Mluví nahlas);
+- gives a **morning overview** the first time you sit down after six: today's reminders, what the night shift finished, what Wisp's agents need (tray → Ranní přehled, or Co mě dneska čeká? at any time);
+- **does work**: "v job-mailu oprav to a to" goes to [Wisp](https://github.com/ErikKarasek/wisp)'s night shift, which runs Claude Code in its own branch and opens a draft PR. Nothing starts before you press Ano in the bubble; when it is done, the buddy says so with the PR link;
+- **wakes the Windows PC** (Wake-on-LAN; the PC on a cable, WoL on in the BIOS and the network card) and, after an Ano, shuts it down, restarts it or puts it to sleep over SSH (Windows' OpenSSH Server with the Mac's key; tell the buddy the login, e.g. `erik@10.0.1.23`);
+- **works the Samsung TV** on the home network: on, off, volume, keys, YouTube / Netflix / Spotify / Disney+ / Prime Video. The first time the TV asks on screen whether to allow Wisp Buddy.
+
+Ask it to "find the devices at home" and it looks at what the Mac sees on the network; a Samsung TV is saved by itself. The PC's MAC address is in Windows under `ipconfig /all` (Physical Address of the Ethernet adapter). `cargo test --lib live_network -- --ignored --nocapture` prints what is on the network now.
+
 ## Build
 
 ```sh
