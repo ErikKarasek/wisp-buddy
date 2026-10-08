@@ -125,18 +125,33 @@ fn task_entry(id: &str, project: &str, task: &str, now: bool) -> Value {
 }
 
 /// The queue and the last results, for the chat.
+/// A task Wisp is no longer going to touch. "cancelled" belongs here too: Wisp writes it when
+/// a queued task is called off from the phone, and a task that counts as neither waiting nor
+/// over would fall out of the chat without a word.
+fn over(status: &Value) -> bool {
+    status == "done" || status == "failed" || status == "cancelled"
+}
+
+/// What is still coming, and the last few that are over. Split out of `status` so a test can
+/// see it without a queue on the disk.
+fn waiting_and_over(all: &[Value]) -> (Vec<Value>, Vec<Value>) {
+    let pick = |t: &Value| json!({ "project": t["project"], "task": t["task"], "status": t["status"], "pr": t["pr"], "summary": t["summary"], "now": t["now"] });
+    let waiting = all.iter().filter(|t| t["status"] == "queued" || t["status"] == "running").map(pick).collect();
+    let done = all.iter().rev().filter(|t| over(&t["status"])).take(5).map(pick).collect();
+    (waiting, done)
+}
+
 pub fn status() -> Value {
     if !wisp_installed() {
         return json!({ "error": "Wisp is not installed on this Mac, so there is no one to do the work." });
     }
-    let all = read();
-    let pick = |t: &Value| json!({ "project": t["project"], "task": t["task"], "status": t["status"], "pr": t["pr"], "summary": t["summary"], "now": t["now"] });
-    let open: Vec<Value> = all.iter().filter(|t| t["status"] == "queued" || t["status"] == "running").map(pick).collect();
-    let done: Vec<Value> = all.iter().rev().filter(|t| t["status"] == "done" || t["status"] == "failed").take(5).map(pick).collect();
+    let (open, done) = waiting_and_over(&read());
     json!({ "open": open, "recent": done, "projects": projects() })
 }
 
-/// Tasks that finished since `since_ms`, as lines for the morning.
+/// Tasks that finished since `since_ms`, as lines for the morning. A cancelled one is left out
+/// on purpose: the overview says what happened while nobody was watching, and calling a task
+/// off is something its own person did.
 pub fn finished_since(since_ms: u64) -> Vec<String> {
     read()
         .iter()
@@ -199,6 +214,17 @@ mod tests {
         drop(held);
         assert!(super::lock_in(&dir, short).is_some(), "free again once the first writer is done");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cancelled_task_is_over_instead_of_disappearing() {
+        let q = |id: &str, status: &str| serde_json::json!({ "id": id, "project": "wisp", "task": id, "status": status, "pr": null, "summary": null, "now": false });
+        let all = [q("a", "queued"), q("b", "running"), q("c", "done"), q("d", "cancelled"), q("e", "failed")];
+        let (waiting, over) = super::waiting_and_over(&all);
+        let ids = |v: &[serde_json::Value]| v.iter().map(|t| t["task"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
+        assert_eq!(ids(&waiting), ["a", "b"], "only what Wisp still owes");
+        // Newest first, and the cancelled one is among them rather than nowhere.
+        assert_eq!(ids(&over), ["e", "d", "c"]);
     }
 
     #[test]
