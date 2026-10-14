@@ -45,13 +45,17 @@ export async function startChat() {
   let name = "Buddy";
   const messages: Message[] = [];
   let busy = false;
+  /** The answer as it arrives, word by word, before it becomes a message. */
+  let writing = "";
 
   const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
   /** Escaped, with web links (a PR to look at) clickable. */
   const rich = (s: string) => esc(s).replace(/https:\/\/[^\s<]+[^\s<.,;:!?)]/g, (url) => `<a href="${url}">${url.length > 48 ? url.slice(0, 46) + "…" : url}</a>`);
   const render = (thinking = false) => {
     log.innerHTML =
-      (messages.length ? "" : `<p class="hint">Ahoj, já jsem ${esc(name)}. Co je nového? Můžu ti něco připomenout, zapamatovat si, zadat práci v projektu, zapnout počítač nebo televizi. Klidně mi to řekni přes 🎙.</p>`) +
+      (messages.length
+        ? ""
+        : `<p class="hint">Řekni, co potřebuješ: připomenout, zapamatovat, otevřít stránku nebo aplikaci, zadat práci v projektu, zapnout počítač nebo televizi. Mluvit můžeš přes 🎙.</p>`) +
       messages
         .map((m, i) => {
           const buttons =
@@ -64,7 +68,7 @@ export async function startChat() {
           return `<p class="${m.role}${m.reminder !== undefined ? " remind" : ""}">${m.role === "buddy" ? rich(m.text) : esc(m.text)}${buttons}${asks}</p>`;
         })
         .join("") +
-      (thinking ? `<p class="buddy dots"><i></i><i></i><i></i></p>` : "");
+      (writing ? `<p class="buddy">${rich(writing)}</p>` : thinking ? `<p class="buddy dots"><i></i><i></i><i></i></p>` : "");
     log.scrollTop = log.scrollHeight;
   };
 
@@ -168,6 +172,7 @@ export async function startChat() {
     render(true);
     try {
       const answer = await invoke<Reply>("chat_send", { name, messages });
+      writing = "";
       messages.push({ role: "buddy", text: answer.text, asks: answer.asks.length ? answer.asks : undefined });
     } catch (err) {
       const why = String(err);
@@ -180,6 +185,7 @@ export async function startChat() {
         console.warn(why);
       }
     } finally {
+      writing = "";
       busy = false;
       render();
       input.focus();
@@ -268,6 +274,17 @@ export async function startChat() {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") close();
   });
+  // The answer as Rust streams it in, and the take-back when what came was the buddy thinking
+  // out loud before reaching for a tool.
+  void listen<string>("chat-delta", (e) => {
+    writing += e.payload;
+    render(true);
+  });
+  void listen("chat-undelta", () => {
+    writing = "";
+    render(busy);
+  });
+
   void listen<boolean>("chat-shown", (e) => void refresh(e.payload !== false));
   void listen("config-changed", () => void refresh(false));
   void listen("reminders-changed", () => void loadReminders());

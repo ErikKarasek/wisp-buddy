@@ -19,13 +19,28 @@ use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{App, AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
-/// A web link from a page (the AI Studio link in the chat), in the default browser. Only https.
+/// A web page in the default browser. Only the web: no file:// and no app's own scheme, so a
+/// made-up address cannot talk to something else on the Mac.
+pub fn open_in_browser(url: &str) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("jen webové odkazy (http, https)".into());
+    }
+    std::process::Command::new("/usr/bin/open").arg("--").arg(url).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// An app on the Mac by its name. The name is an argument, never a command line.
+pub fn open_mac_app(name: &str) -> Result<(), String> {
+    let out = std::process::Command::new("/usr/bin/open").args(["-a", name]).output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(format!("aplikaci {name} tu nenajdu"))
+}
+
+/// A web link from a page (the AI Studio link in the chat), in the default browser.
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
-    if !url.starts_with("https://") {
-        return Err("only https links".into());
-    }
-    std::process::Command::new("/usr/bin/open").arg(&url).spawn().map(|_| ()).map_err(|e| e.to_string())
+    open_in_browser(&url)
 }
 
 /// The studio window, made when first asked for and brought to the front after that.

@@ -9,7 +9,8 @@ Made with Tauri 2 (Rust + TypeScript). The body (walking, falling, being carried
 It is not only company. In the chat (or through the 🎙 button in the bubble: click, speak, click again) it:
 
 - **remembers** what you tell it about yourself and your plans, and starts every conversation knowing it (🧠 in the bubble lists it, ✕ forgets);
-- **talks out loud** with the Mac's Czech voice (tray → Mluví nahlas);
+- **talks out loud**, sentence by sentence while the answer is still being written, so it starts speaking instead of waiting for the last word (tray → Mluví nahlas). macOS ships a compact Zuzana for Czech that sounds like a translator; the one better Apple voice is Iveta, a 121 MB download in System Settings → Accessibility → Spoken Content → Manage Voices, which is picked up within a minute with no restart. Czech has no Premium or Enhanced Zuzana at all;
+- **opens pages and apps**: "otevři mi github a jira" opens the tabs, "pusť Spotify" starts the app;
 - gives a **morning overview** the first time you sit down after six: today's reminders, what the night shift finished, what Wisp's agents need (tray → Ranní přehled, or Co mě dneska čeká? at any time);
 - **does work**: "v job-mailu oprav to a to" goes to [Wisp](https://github.com/ErikKarasek/wisp)'s night shift, which runs Claude Code in its own branch and opens a draft PR. Nothing starts before you press Ano in the bubble; when it is done, the buddy says so with the PR link;
 - **wakes the Windows PC** (Wake-on-LAN; the PC on a cable, WoL on in the BIOS and the network card) and, after an Ano, shuts it down, restarts it or puts it to sleep over SSH (Windows' OpenSSH Server with the Mac's key; tell the buddy the login, e.g. `erik@10.0.1.23`);

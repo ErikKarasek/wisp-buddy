@@ -88,16 +88,22 @@ pub fn persona(app: &AppHandle) -> String {
 
 fn system_prompt(app: &AppHandle, name: &str) -> String {
     format!(
-        "Jsi {name}, malá postavička z rodiny Wisp, která žije na ploše Macu. Chodíš po spodku obrazovky, \
-občas si sedneš a v noci spíš. Člověk tě může chytit myší a hodit, a teď si s tebou povídá.\n\
-Jsi ale i jeho osobní asistent: pamatuješ si, co ti řekne, připomínáš, zadáváš za něj práci, zapínáš mu počítač \
-a ovládáš televizi. Nejsi jen na povely, chováš se jako parťák, který ví, co člověk řeší.\n\
-Odpovídej česky (anglicky jen když on píše anglicky), krátce, jednou až třemi větami, jako kamarád. \
-Buď milý a trochu hravý, ale ne přeslazený. Žádné odrážky ani nadpisy, žádné emoji navíc. \
-Odpovědi se často čtou nahlas, tak piš, aby se daly dobře vyslovit.\n\
+        "Jsi {name}, parťák z rodiny Wisp, který žije na ploše Macu a dělá osobního asistenta. \
+Pamatuješ si, co ti člověk řekne, připomínáš mu, zadáváš za něj práci, otevíráš mu stránky a aplikace, \
+zapínáš počítač a ovládáš televizi.\n\
+Jak mluvíš:\n\
+- Česky (anglicky jen když on píše anglicky), krátce, jednou až třemi větami.\n\
+- Jdi hned na věc. Žádné vítání, žádné úvody, žádné \"jen tak se tu rozhlížím\".\n\
+- Nekomentuj sám sebe, svoje tělo ani to, že chodíš po obrazovce. O sobě mluv jen když se na to zeptá.\n\
+- Mluv jako normální člověk. Žádné odrážky, nadpisy, emoji ani zdrobněliny, nepřehrávej to a nebuď přeslazený.\n\
+- Když něco udělá nástroj, řekni jednou větou, jak to dopadlo, a dost.\n\
+- Odpovědi se čtou nahlas, tak piš, aby se daly vyslovit.\n\
 Když nevíš, řekni to. Nevymýšlej si, co nevidíš: nevidíš obrazovku, soubory ani co člověk dělá. \
 Když nástroj vrátí chybu, řekni po lidsku, co chybí nebo co má člověk udělat.\n\
 Co umíš nástroji:\n\
+- Stránky a aplikace: open_url otevře odkaz v prohlížeči, open_app spustí aplikaci na Macu. Když chce \
+\"otevřít záložky\" nebo víc stránek, zavolej open_url pro každou z nich. Když nevíš přesnou adresu, \
+použij hledání na Googlu. Co ti neřekl, si nedomýšlej.\n\
 - Připomínky: set_reminder, list_reminders, cancel_reminder. Čas počítej od teď. Když neřekne přesný čas \
 (\"odpoledne\", \"večer\"), zeptej se.\n\
 - Paměť: když řekne něco, co se bude hodit i příště (kdo je, na čem pracuje, co plánuje, co má rád, jak se co jmenuje), \
@@ -132,6 +138,16 @@ fn tools() -> Value {
     let keys: Vec<&str> = crate::home::KEYS.iter().map(|(k, _)| *k).collect();
     let apps: Vec<&str> = crate::home::APPS.iter().map(|(a, _)| *a).collect();
     json!([
+        tool("open_url", "Open a web page in the user's browser, in a new tab. Call it once per page to open several.", json!({
+            "type": "object",
+            "properties": { "url": { "type": "string", "description": "Full http(s) address, e.g. https://github.com/notifications" } },
+            "required": ["url"]
+        })),
+        tool("open_app", "Start an app on the Mac by its name, e.g. Spotify, Terminal, Visual Studio Code.", json!({
+            "type": "object",
+            "properties": { "name": { "type": "string", "description": "The app's name as it is in Applications" } },
+            "required": ["name"]
+        })),
         tool("set_reminder", "Save a reminder. The buddy wakes up at that time and shows the text in its bubble.", json!({
             "type": "object",
             "properties": {
@@ -269,6 +285,14 @@ fn run_tool(app: &AppHandle, name: &str, args: &Value, asks: &mut Vec<Ask>) -> V
             let _ = app.emit("reminders-changed", ());
             json!({ "ok": true, "id": r.id, "when": crate::reminders::describe(r.at), "repeat": r.repeat })
         }
+        "open_url" => match s("url") {
+            Some(url) => crate::open_in_browser(url).map_or_else(|e| json!({ "error": e }), |()| json!({ "ok": true, "opened": url })),
+            None => json!({ "error": "url is empty" }),
+        },
+        "open_app" => match s("name") {
+            Some(name) => crate::open_mac_app(name).map_or_else(|e| json!({ "error": e }), |()| json!({ "ok": true, "opened": name })),
+            None => json!({ "error": "name is empty" }),
+        },
         "list_reminders" => json!({ "reminders": reminders(app.clone()) }),
         "cancel_reminder" => {
             let gone = crate::reminders::remove(app, args["id"].as_str().unwrap_or(""));
@@ -322,50 +346,185 @@ fn run_tool(app: &AppHandle, name: &str, args: &Value, asks: &mut Vec<Ask>) -> V
     }
 }
 
-/// One reply from Gemini to `history`: the model's message, which may ask for tools. Tries the
-/// next model when one is busy. "nokey" and "badkey" mean the key, not the model.
-pub async fn complete(history: &[Value], tools: Option<&Value>) -> Result<Value, String> {
+/// The lightest model, for the small jobs (writing down a recording) where the big one only
+/// costs time.
+const LIGHTEST: usize = MODELS.len() - 1;
+/// Which model last answered. Tried first next time, so a newest model that is busy today is
+/// not paid for with a failed round trip on every single question.
+static LAST_GOOD: Mutex<Option<usize>> = Mutex::new(None);
+
+fn models_from(first: usize) -> Vec<usize> {
+    let mut all: Vec<usize> = (0..MODELS.len()).collect();
+    all.sort_by_key(|i| (*i != first, *i));
+    all
+}
+
+/// Folds one streamed piece into the message being rebuilt: text and tool arguments grow, tool
+/// calls line up by their index, and everything else the model sends is kept as it came. Gemini 3
+/// wants its own thought signatures handed back, and they do not all sit on the tool calls.
+fn merge_delta(key: &str, acc: &mut Value, delta: &Value) {
+    // Only these two arrive in pieces; an id or a name repeated in a later piece is the same
+    // id, not more of it.
+    let grows = matches!(key, "content" | "arguments" | "reasoning_content");
+    match (acc, delta) {
+        (Value::String(have), Value::String(piece)) if grows => have.push_str(piece),
+        (Value::Object(have), Value::Object(piece)) => {
+            for (k, v) in piece {
+                if v.is_null() {
+                    continue;
+                }
+                match have.get_mut(k) {
+                    Some(slot) => merge_delta(k, slot, v),
+                    None => {
+                        have.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+        (Value::Array(have), Value::Array(pieces)) => {
+            for piece in pieces {
+                let at = piece.get("index").and_then(Value::as_u64).map_or(have.len(), |i| i as usize);
+                while have.len() <= at {
+                    have.push(json!({}));
+                }
+                merge_delta(key, &mut have[at], piece);
+            }
+        }
+        (slot, piece) => *slot = piece.clone(),
+    }
+}
+
+/// The whole lines waiting in `raw`, taken out of it. A chunk from the network can end in the
+/// middle of a č, so the bytes are kept until the newline that completes the line: turning each
+/// chunk into text on its own would mangle every Czech letter that straddles two of them.
+fn whole_lines(raw: &mut Vec<u8>) -> Vec<String> {
+    let mut lines = vec![];
+    while let Some(nl) = raw.iter().position(|b| *b == b'\n') {
+        let line: Vec<u8> = raw.drain(..=nl).collect();
+        lines.push(String::from_utf8_lossy(&line[..line.len() - 1]).into_owned());
+    }
+    lines
+}
+
+/// Why one model did not answer.
+enum Fail {
+    /// The key itself: no other model will help.
+    Key,
+    /// This model: the next one is worth a try.
+    Model,
+    /// Nothing came out of the stream, whatever the reason. Worth one plain, unstreamed try
+    /// before giving up on the model.
+    Stream,
+}
+
+/// Asks one model.
+async fn ask_model<'sink>(
+    client: &reqwest::Client,
+    key: &str,
+    model: &str,
+    history: &[Value],
+    tools: Option<&Value>,
+    on_delta: Option<&mut (dyn FnMut(&str) + Send + 'sink)>,
+) -> Result<Value, (Fail, String)> {
+    let streaming = on_delta.is_some();
+    let mut body = json!({ "model": model, "messages": history, "reasoning_effort": "low" });
+    if let Some(t) = tools {
+        body["tools"] = t.clone();
+    }
+    if streaming {
+        body["stream"] = json!(true);
+    }
+    let soft = |e: String| (Fail::Model, format!("{model}: {e}"));
+    let mut r = client.post(GEMINI_URL).bearer_auth(key).json(&body).send().await.map_err(|e| soft(e.to_string()))?;
+    if !r.status().is_success() {
+        let status = r.status().as_u16();
+        let detail = r.text().await.unwrap_or_default();
+        // A wrong key will not get better with another model.
+        if (status == 400 && detail.to_lowercase().contains("key")) || status == 401 || status == 403 {
+            return Err((Fail::Key, "badkey".into()));
+        }
+        return Err(soft(format!("HTTP {status}")));
+    }
+    let message = match on_delta {
+        None => {
+            let v: Value = r.json().await.map_err(|e| soft(e.to_string()))?;
+            v["choices"][0]["message"].clone()
+        }
+        Some(on_delta) => {
+            let mut message = json!({});
+            let mut raw: Vec<u8> = Vec::new();
+            while let Some(chunk) = r.chunk().await.map_err(|e| soft(e.to_string()))? {
+                raw.extend_from_slice(&chunk);
+                for line in whole_lines(&mut raw) {
+                    let Some(data) = line.trim().strip_prefix("data:") else { continue };
+                    let data = data.trim();
+                    if data.is_empty() || data == "[DONE]" {
+                        continue;
+                    }
+                    let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
+                    let delta = &v["choices"][0]["delta"];
+                    if !delta.is_object() {
+                        continue;
+                    }
+                    if let Some(piece) = delta["content"].as_str().filter(|p| !p.is_empty()) {
+                        on_delta(piece);
+                    }
+                    merge_delta("", &mut message, delta);
+                }
+            }
+            message
+        }
+    };
+    let nothing = message["content"].as_str().is_none_or(|t| t.trim().is_empty()) && message["tool_calls"].as_array().is_none_or(|c| c.is_empty());
+    if nothing {
+        let why = if streaming { Fail::Stream } else { Fail::Model };
+        return Err((why, format!("{model}: prázdná odpověď")));
+    }
+    Ok(message)
+}
+
+/// One reply from Gemini to `history`: the model's message, which may ask for tools. With
+/// `on_delta` the answer is streamed and each new piece of its text goes there the moment it
+/// lands, so the bubble and the voice do not wait for the last word. Tries the next model when
+/// one is busy. "nokey" and "badkey" mean the key, not the model.
+async fn gemini<'sink>(history: &[Value], tools: Option<&Value>, first: usize, mut on_delta: Option<&mut (dyn FnMut(&str) + Send + 'sink)>) -> Result<Value, String> {
     let key = key().ok_or("nokey")?;
     let client = reqwest::Client::builder().timeout(Duration::from_secs(40)).build().map_err(|e| e.to_string())?;
     let mut last_err = String::new();
-    for model in MODELS {
-        let mut body = json!({ "model": model, "messages": history, "reasoning_effort": "low" });
-        if let Some(t) = tools {
-            body["tools"] = t.clone();
-        }
-        let r = match client.post(GEMINI_URL).bearer_auth(&key).json(&body).send().await {
-            Ok(r) => r,
-            Err(e) => {
-                last_err = format!("{model}: {e}");
-                continue;
+    let good = |i: usize| *LAST_GOOD.lock().unwrap_or_else(|e| e.into_inner()) = Some(i);
+    for i in models_from(first) {
+        match ask_model(&client, &key, MODELS[i], history, tools, on_delta.as_deref_mut()).await {
+            Ok(message) => {
+                good(i);
+                return Ok(message);
             }
-        };
-        if !r.status().is_success() {
-            let status = r.status().as_u16();
-            let detail = r.text().await.unwrap_or_default();
-            // A wrong key will not get better with another model.
-            if (status == 400 && detail.to_lowercase().contains("key")) || status == 401 || status == 403 {
-                return Err("badkey".into());
+            Err((Fail::Key, fatal)) => return Err(fatal),
+            Err((Fail::Model, e)) => last_err = e,
+            // The stream gave nothing. Before writing the model off, ask it the plain way:
+            // a streamed answer is nicer, an answer is the point.
+            Err((Fail::Stream, _)) => {
+                match ask_model(&client, &key, MODELS[i], history, tools, None).await {
+                    Ok(message) => {
+                        good(i);
+                        return Ok(message);
+                    }
+                    Err((Fail::Key, fatal)) => return Err(fatal),
+                    Err((_, e)) => last_err = e,
+                }
             }
-            last_err = format!("{model}: HTTP {status}");
-            continue;
         }
-        let v: Value = match r.json().await {
-            Ok(v) => v,
-            Err(e) => {
-                last_err = format!("{model}: {e}");
-                continue;
-            }
-        };
-        let message = v["choices"][0]["message"].clone();
-        let empty = message["content"].as_str().is_none_or(|t| t.trim().is_empty()) && message["tool_calls"].as_array().is_none_or(|c| c.is_empty());
-        if empty {
-            last_err = format!("{model}: prázdná odpověď");
-            continue;
-        }
-        return Ok(message);
     }
     Err(last_err)
+}
+
+/// The model to try first.
+fn preferred() -> usize {
+    LAST_GOOD.lock().unwrap_or_else(|e| e.into_inner()).unwrap_or(0)
+}
+
+/// One reply, waited for whole.
+pub async fn complete(history: &[Value], tools: Option<&Value>) -> Result<Value, String> {
+    gemini(history, tools, preferred(), None).await
 }
 
 /// The buddy's answer, and any questions with buttons that came up on the way.
@@ -381,7 +540,7 @@ pub async fn chat_send(app: AppHandle, name: String, messages: Vec<Message>) -> 
     if key().is_none() {
         return Err("nokey".into());
     }
-    crate::voice::hush();
+    let mut turn = crate::voice::begin();
     let mut history = vec![json!({ "role": "system", "content": system_prompt(&app, &name) })];
     // The last twenty turns are plenty for a chat bubble and keep each call small.
     let start = messages.len().saturating_sub(20);
@@ -394,20 +553,56 @@ pub async fn chat_send(app: AppHandle, name: String, messages: Vec<Message>) -> 
     let mut asks = vec![];
     // A few rounds: the model may use a tool, read the result, then answer.
     for _ in 0..5 {
-        let message = match complete(&history, Some(&tools)).await {
-            Ok(m) => m,
-            Err(e) => {
-                let _ = app.emit_to("pet", "pet-react", "confused");
-                return Err(e);
+        // The answer as it is being written: shown in the bubble and said out loud sentence by
+        // sentence, so neither waits for the last word.
+        let mut written = String::new();
+        let mut unsaid = String::new();
+        let message = {
+            let mut on_delta = |piece: &str| {
+                if written.is_empty() {
+                    let _ = app.emit_to("pet", "pet-react", "talk");
+                }
+                written.push_str(piece);
+                let _ = app.emit_to("chat", "chat-delta", piece);
+                unsaid.push_str(piece);
+                while let Some(sentence) = crate::voice::next_sentence(&mut unsaid, false) {
+                    crate::voice::speak_part(turn, &sentence);
+                }
+            };
+            match gemini(&history, Some(&tools), preferred(), Some(&mut on_delta)).await {
+                Ok(m) => m,
+                Err(e) => {
+                    crate::voice::hush();
+                    let _ = app.emit_to("chat", "chat-undelta", ());
+                    let _ = app.emit_to("pet", "pet-react", "confused");
+                    return Err(e);
+                }
             }
         };
         let calls = message["tool_calls"].as_array().cloned().unwrap_or_default();
         if calls.is_empty() {
-            let text = message["content"].as_str().unwrap_or("").trim().to_string();
+            if let Some(last) = crate::voice::next_sentence(&mut unsaid, true) {
+                crate::voice::speak_part(turn, &last);
+            }
+            let text = match written.trim() {
+                "" => message["content"].as_str().unwrap_or("").trim().to_string(),
+                streamed => streamed.to_string(),
+            };
+            // Nothing was streamed (an older model, or no stream at all): say it in one go.
+            if written.trim().is_empty() {
+                crate::voice::speak(&text);
+            }
             let _ = app.emit_to("pet", "pet-react", "talk");
-            crate::voice::speak(&text);
+            let _ = app.emit_to("chat", "chat-undelta", ());
             return Ok(Reply { text, asks });
         }
+        // It wants a tool after all. Whatever it wrote before that was thinking out loud, not
+        // the answer: take it back off the page and stop saying it.
+        if !written.trim().is_empty() {
+            turn = crate::voice::begin();
+            let _ = app.emit_to("chat", "chat-undelta", ());
+        }
+        let _ = app.emit_to("pet", "pet-react", "think");
         // Back whole, with every field it came with: Gemini 3 wants its own thought signatures
         // returned, and they do not all sit on the tool calls. Rebuilding the message from
         // content and tool_calls alone drops them, and the next round is then refused.
@@ -449,7 +644,7 @@ Vrať jen samotný přepis s interpunkcí, bez uvozovek a komentářů. Když v 
             { "type": "input_audio", "input_audio": { "data": audio, "format": "wav" } }
         ] }),
     ];
-    let m = complete(&history, None).await?;
+    let m = gemini(&history, None, LIGHTEST, None).await?;
     let text = m["content"].as_str().unwrap_or("").trim().trim_matches(['"', '„', '“']).trim().to_string();
     Ok(if text == "-" { String::new() } else { text })
 }
@@ -511,6 +706,8 @@ fn show(app: &AppHandle, focus: bool) {
 
 #[tauri::command]
 pub fn chat_close(app: AppHandle) {
+    // Closing the bubble ends the answer: no talking on to a shut window.
+    crate::voice::hush();
     crate::pet::set_talking(false);
     if let Some(w) = app.get_webview_window("chat") {
         let _ = w.hide();
@@ -527,4 +724,85 @@ pub fn follow(app: &AppHandle, x: f64, y: f64, size: f64, area: (f64, f64, f64, 
     let bx = (x + size / 2.0 - BUBBLE_W / 2.0).clamp(left + 6.0, right - BUBBLE_W - 6.0);
     let by = (y - BUBBLE_H + size * 0.18).max(top + 6.0);
     let _ = w.set_position(PhysicalPosition::new((bx * scale).round() as i32, (by * scale).round() as i32));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Feeds a message in the pieces a stream would send it in.
+    fn streamed(pieces: &[Value]) -> Value {
+        let mut message = json!({});
+        for piece in pieces {
+            merge_delta("", &mut message, piece);
+        }
+        message
+    }
+
+    #[test]
+    fn the_answer_grows_out_of_its_pieces() {
+        let message = streamed(&[
+            json!({ "role": "assistant", "content": "Jasně, " }),
+            json!({ "content": "otevřeno." }),
+            json!({ "content": "" }),
+        ]);
+        assert_eq!(message["content"], json!("Jasně, otevřeno."));
+        // Said once, not three times over.
+        assert_eq!(message["role"], json!("assistant"));
+    }
+
+    #[test]
+    fn a_tool_call_arrives_in_pieces_and_comes_out_whole() {
+        let message = streamed(&[
+            json!({ "role": "assistant", "tool_calls": [{ "index": 0, "id": "call_1", "type": "function", "function": { "name": "open_url", "arguments": "{\"url\":" } }] }),
+            json!({ "tool_calls": [{ "index": 0, "function": { "arguments": "\"https://github.com\"}" } }] }),
+        ]);
+        let call = &message["tool_calls"][0];
+        // An id repeated by the stream is the same id, not twice as long a one.
+        assert_eq!(call["id"], json!("call_1"));
+        assert_eq!(call["function"]["name"], json!("open_url"));
+        assert_eq!(call["function"]["arguments"], json!("{\"url\":\"https://github.com\"}"));
+    }
+
+    #[test]
+    fn two_tools_at_once_do_not_land_on_top_of_each_other() {
+        let message = streamed(&[
+            json!({ "tool_calls": [{ "index": 0, "id": "a", "function": { "name": "open_url", "arguments": "{}" } }] }),
+            json!({ "tool_calls": [{ "index": 1, "id": "b", "function": { "name": "open_app", "arguments": "{}" } }] }),
+        ]);
+        assert_eq!(message["tool_calls"].as_array().map(Vec::len), Some(2));
+        assert_eq!(message["tool_calls"][0]["function"]["name"], json!("open_url"));
+        assert_eq!(message["tool_calls"][1]["function"]["name"], json!("open_app"));
+    }
+
+    #[test]
+    fn whatever_else_the_model_sends_is_kept() {
+        // Gemini 3 wants its own thought signatures handed back, and they do not all sit on the
+        // tool calls. Rebuilding only content and tool_calls drops them and the next round is refused.
+        let message = streamed(&[
+            json!({ "role": "assistant", "extra_content": { "google": { "thought_signature": "sig-1" } } }),
+            json!({ "content": "Hotovo." }),
+        ]);
+        assert_eq!(message["extra_content"]["google"]["thought_signature"], json!("sig-1"));
+    }
+
+    #[test]
+    fn a_czech_letter_split_across_two_chunks_survives() {
+        let mut raw: Vec<u8> = Vec::new();
+        let whole = "data: {\"t\":\"říkám\"}\n".as_bytes().to_vec();
+        // Cut inside the ř: its first byte ends up in one chunk, its second in the next.
+        let (first, second) = whole.split_at(13);
+        raw.extend_from_slice(first);
+        // Nothing is a whole line yet.
+        assert!(whole_lines(&mut raw).is_empty());
+        raw.extend_from_slice(second);
+        assert_eq!(whole_lines(&mut raw), vec!["data: {\"t\":\"říkám\"}".to_string()]);
+        assert!(raw.is_empty());
+    }
+
+    #[test]
+    fn the_model_that_worked_is_asked_first_next_time() {
+        assert_eq!(models_from(0), vec![0, 1, 2]);
+        assert_eq!(models_from(2), vec![2, 0, 1]);
+    }
 }
