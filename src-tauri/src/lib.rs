@@ -28,13 +28,28 @@ pub fn open_in_browser(url: &str) -> Result<(), String> {
     std::process::Command::new("/usr/bin/open").arg("--").arg(url).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
-/// An app on the Mac by its name. The name is an argument, never a command line.
+const APP_FOLDERS: [&str; 4] = ["/Applications", "/Applications/Utilities", "/System/Applications", "/System/Applications/Utilities"];
+
+/// The installed app a plain name stands for. `open -a` also takes a path, so anything that
+/// looks like one is refused, and only the system app folders are looked in.
+fn find_mac_app(name: &str) -> Option<std::path::PathBuf> {
+    let name = name.trim();
+    let name = name.strip_suffix(".app").unwrap_or(name);
+    if name.is_empty() || name.starts_with(['-', '~', '.']) || name.contains(['/', '\\', '\0']) {
+        return None;
+    }
+    APP_FOLDERS.iter().map(|dir| std::path::Path::new(dir).join(format!("{name}.app"))).find(|p| p.is_dir())
+}
+
+/// An app on the Mac by its name, from the system app folders only. The name is never a path
+/// and never a command line.
 pub fn open_mac_app(name: &str) -> Result<(), String> {
-    let out = std::process::Command::new("/usr/bin/open").args(["-a", name]).output().map_err(|e| e.to_string())?;
+    let path = find_mac_app(name).ok_or_else(|| format!("aplikaci {name} tu nenajdu"))?;
+    let out = std::process::Command::new("/usr/bin/open").arg("-a").arg(&path).output().map_err(|e| e.to_string())?;
     if out.status.success() {
         return Ok(());
     }
-    Err(format!("aplikaci {name} tu nenajdu"))
+    Err(format!("aplikaci {name} se nepodařilo spustit"))
 }
 
 /// A web link from a page (the AI Studio link in the chat), in the default browser.
@@ -215,4 +230,25 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("Wisp Buddy failed to start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_mac_app;
+
+    #[test]
+    fn app_names_that_are_paths_or_options_are_refused() {
+        for name in ["/tmp/x.app", "~/Downloads/Foo", "-g", "../Foo", "Utilities/Terminal", "..", ".hidden", "", "  ", "/System/Applications/Calculator"] {
+            assert!(find_mac_app(name).is_none(), "{name:?} should be refused");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_system_app_is_found_by_its_plain_name() {
+        for name in ["Calculator", "Calculator.app", "Terminal"] {
+            assert!(find_mac_app(name).is_some(), "{name:?} should be found");
+        }
+        assert!(find_mac_app("No Such App Here").is_none());
+    }
 }
